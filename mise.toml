@@ -1,0 +1,25 @@
+[tools]
+go = "1.27.0"
+golangci-lint = "2.13.2"
+pulumi = "3.261.0"
+node = "26.8.1"
+pnpm = "11.24.0"
+
+[env]
+AWS_REGION = { default = "eu-central-1" }
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.build]
+description = "Build pulumi-backend binary"
+run = "go build -o bin/pulumi-backend ./cmd/pulumi-backend"
+
+[tasks.run]
+description = "Run backend locally (needs config.yaml)"
+run = "go run ./cmd/pulumi-backend --config config.yaml"
