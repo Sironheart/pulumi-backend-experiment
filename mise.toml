@@ -2,8 +2,6 @@
 go = "1.27.0"
 golangci-lint = "2.13.2"
 pulumi = "3.261.0"
-node = "26.8.1"
-pnpm = "11.24.0"
 
 [env]
 AWS_REGION = { default = "eu-central-1" }
