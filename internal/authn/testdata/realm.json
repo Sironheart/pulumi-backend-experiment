@@ -1,0 +1,28 @@
+{
+  "realm": "pulumi-backend",
+  "enabled": true,
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "requiredActions": [],
+      "credentials": [
+        { "type": "password", "value": "alice-secret", "temporary": false }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "pulumi-backend",
+      "enabled": true,
+      "secret": "pulumi-backend-secret",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true
+    }
+  ]
+}

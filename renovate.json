@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "goreleaser-action version input",
+      "managerFilePatterns": ["/\\.forgejo/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "distribution:\\s*goreleaser\\s*\\n\\s*version:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "goreleaser/goreleaser",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "go install module pins in workflows",
+      "managerFilePatterns": ["/\\.forgejo/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["go install (?<depName>\\S+)@(?<currentValue>\\S+)"],
+      "datasourceTemplate": "go"
+    }
+  ]
+}

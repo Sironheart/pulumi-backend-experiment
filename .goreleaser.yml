@@ -1,0 +1,91 @@
+version: 2
+
+project_name: pulumi-backend
+
+force_token: gitea
+
+gitea_urls:
+  api: "{{ .Env.FORGEJO_API_URL }}"
+  download: "{{ .Env.FORGEJO_SERVER_URL }}"
+
+builds:
+  - id: pulumi-backend
+    main: ./cmd/pulumi-backend
+    binary: pulumi-backend
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+kos:
+  - id: pulumi-backend
+    build: pulumi-backend
+    base_image: cgr.dev/chainguard/static
+    user: "65532"
+    repositories:
+      - "forgejo.siron.casa/{{ .Env.FORGEJO_REPOSITORY }}"
+    tags:
+      - "{{ .Tag }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    bare: true
+    preserve_import_paths: false
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    creation_time: "{{ .CommitTimestamp }}"
+    ko_data_creation_time: "{{ .CommitTimestamp }}"
+    sbom: spdx
+    labels:
+      org.opencontainers.image.source: "https://forgejo.siron.casa/{{ .Env.FORGEJO_REPOSITORY }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+
+archives:
+  - id: pulumi-backend
+    ids:
+      - pulumi-backend
+    name_template: "pulumi-backend-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    formats:
+      - tar.gz
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+  abbrev: -1
+  groups:
+    - title: Features
+      regexp: '^.*feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Maintenance
+      regexp: '^.*(chore|ci|build|refactor|test)(\(.+\))??!?:.+$'
+      order: 3
+    - title: Other Changes
+      order: 999
+  filters:
+    exclude:
+      - '^chore\(release\):'
+
+release:
+  gitea:
+    owner: "{{ .Env.FORGEJO_REPOSITORY_OWNER }}"
+    name: '{{ index (split .Env.FORGEJO_REPOSITORY "/") 1 }}'
+  mode: keep-existing
+  prerelease: auto

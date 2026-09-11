@@ -1,0 +1,26 @@
+# OIDC issuer URL of your SSO provider (must serve discovery at
+# /.well-known/openid-configuration)
+issuer: https://sso.example.com
+# Client ID expected in the JWT "aud" claim
+clientId: <sso-client-id>
+
+# HMAC key for backend tokens. Prefer an env reference over committing a secret.
+signingKey: env:BACKEND_SIGNING_KEY
+
+# Local-only: skip OIDC and accept any Pulumi token as the caller identity.
+# issuer, clientId, and signingKey become optional.
+# noAuth: true
+
+# listen: ":8080"        # default
+# tokenTTL: 720h         # default: 30d backend token lifetime
+# leaseDuration: 5m      # default: update lease lifetime
+
+# The single S3 bucket holding all state. Credentials come from the ambient
+# AWS chain (env vars, AWS_PROFILE, IRSA, ...).
+bucket: my-pulumi-state
+region: eu-central-1
+
+# KMS key for service-side secrets encryption. Optional: without it the
+# encrypt/decrypt endpoints return 400 and stacks must use their own
+# passphrase/KMS secrets provider.
+kmsKeyArn: arn:aws:kms:eu-central-1:123456789012:key/00000000-0000-0000-0000-000000000000
