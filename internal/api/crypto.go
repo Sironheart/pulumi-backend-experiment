@@ -11,10 +11,10 @@ const (
 	maxCryptoCiphertextBytes = 2 << 20
 )
 
-// requireCrypter guards secrets endpoints when no KMS key is configured.
+// requireCrypter guards secrets endpoints against an invalid server setup.
 func (s *Server) requireCrypter(w http.ResponseWriter) (Crypter, bool) {
 	if s.crypter == nil {
-		writeError(w, http.StatusBadRequest, "no kmsKeyArn configured")
+		writeError(w, http.StatusInternalServerError, "secrets encryption unavailable")
 		return nil, false
 	}
 	return s.crypter, true
@@ -117,7 +117,7 @@ func encryptOne(w http.ResponseWriter, r *http.Request, c Crypter, plaintext []b
 		writeError(w, http.StatusRequestEntityTooLarge, "plaintext too large")
 		return nil, false
 	}
-	ciphertext, err := c.Encrypt(r.Context(), plaintext)
+	ciphertext, err := c.Encrypt(r.Context(), r.PathValue("org"), r.PathValue("project"), r.PathValue("stack"), plaintext)
 	if err != nil {
 		internalError(w, r, err, "encryption failed")
 		return nil, false
@@ -130,7 +130,7 @@ func decryptOne(w http.ResponseWriter, r *http.Request, c Crypter, ciphertext []
 		writeError(w, http.StatusRequestEntityTooLarge, "ciphertext too large")
 		return nil, false
 	}
-	plaintext, err := c.Decrypt(r.Context(), string(ciphertext))
+	plaintext, err := c.Decrypt(r.Context(), r.PathValue("org"), r.PathValue("project"), r.PathValue("stack"), string(ciphertext))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "decryption failed")
 		return nil, false

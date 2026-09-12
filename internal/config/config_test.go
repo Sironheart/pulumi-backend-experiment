@@ -20,16 +20,17 @@ const validYAML = `
 issuer: https://sso.example.com
 clientId: app-client-id
 signingKey: env:TEST_SIGNING_KEY
+secretsKey: env:TEST_SECRETS_KEY
 listen: ":9090"
 tokenTTL: 720h
 leaseDuration: 6m
 bucket: my-state-bucket
 region: eu-central-1
-kmsKeyArn: arn:aws:kms:eu-central-1:111122223333:key/abc
 `
 
 func TestLoadValidConfig(t *testing.T) {
 	t.Setenv("TEST_SIGNING_KEY", "supersecret")
+	t.Setenv("TEST_SECRETS_KEY", "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
 	cfg, err := Load(writeTempConfig(t, validYAML))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -39,6 +40,9 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 	if cfg.SigningKey != "supersecret" {
 		t.Errorf("signingKey env ref not resolved, got %q", cfg.SigningKey)
+	}
+	if cfg.SecretsKey != "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" {
+		t.Errorf("secretsKey env ref not resolved, got %q", cfg.SecretsKey)
 	}
 	if cfg.Listen != ":9090" {
 		t.Errorf("listen = %q", cfg.Listen)
@@ -51,9 +55,6 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 	if cfg.Bucket != "my-state-bucket" || cfg.Region != "eu-central-1" {
 		t.Errorf("bucket/region = %q/%q", cfg.Bucket, cfg.Region)
-	}
-	if cfg.KMSKeyArn == "" {
-		t.Error("kmsKeyArn empty")
 	}
 }
 
@@ -78,6 +79,9 @@ region: r
 	if cfg.LeaseDuration != 5*time.Minute {
 		t.Errorf("default leaseDuration = %v, want 5m", cfg.LeaseDuration)
 	}
+	if cfg.SecretsKey != "" {
+		t.Errorf("default secretsKey = %q, want empty", cfg.SecretsKey)
+	}
 }
 
 func TestRejectsUnknownFields(t *testing.T) {
@@ -88,7 +92,7 @@ clientId: id
 signingKey: env:TEST_SIGNING_KEY
 bucket: b
 region: r
-kmsKeyARN: typo
+unexpectedField: typo
 `))
 	if err == nil {
 		t.Fatal("unknown field accepted")
@@ -212,6 +216,20 @@ region: r
 `))
 	if err == nil {
 		t.Error("expected error for missing env var")
+	}
+}
+
+func TestSecretsKeyEnvMissing(t *testing.T) {
+	_, err := Load(writeTempConfig(t, `
+issuer: https://example.com
+clientId: id
+signingKey: explicit-signing-key
+secretsKey: env:DEFINITELY_NOT_SET_VAR
+bucket: b
+region: r
+`))
+	if err == nil {
+		t.Error("expected error for missing secretsKey env var")
 	}
 }
 

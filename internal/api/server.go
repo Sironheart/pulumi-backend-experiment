@@ -18,8 +18,8 @@ import (
 
 // Crypter encrypts/decrypts secret values.
 type Crypter interface {
-	Encrypt(ctx context.Context, plaintext []byte) (string, error)
-	Decrypt(ctx context.Context, ciphertext string) ([]byte, error)
+	Encrypt(ctx context.Context, org, project, stack string, plaintext []byte) (string, error)
+	Decrypt(ctx context.Context, org, project, stack, ciphertext string) ([]byte, error)
 }
 
 // OIDCValidator validates ID tokens from an OIDC provider.

@@ -18,13 +18,13 @@ type Config struct {
 	Issuer        string        `yaml:"issuer"`
 	ClientID      string        `yaml:"clientId"`
 	SigningKey    string        `yaml:"signingKey"`
+	SecretsKey    string        `yaml:"secretsKey"`
 	Listen        string        `yaml:"listen"`
 	TokenTTL      time.Duration `yaml:"tokenTTL"`
 	LeaseDuration time.Duration `yaml:"leaseDuration"`
 
-	Bucket    string `yaml:"bucket"`
-	Region    string `yaml:"region"`
-	KMSKeyArn string `yaml:"kmsKeyArn"`
+	Bucket string `yaml:"bucket"`
+	Region string `yaml:"region"`
 }
 
 func Load(path string) (*Config, error) {
@@ -76,12 +76,14 @@ func (c *Config) validate() error {
 		}
 		c.SigningKey = defaultLocalSigningKey
 	}
-	if v, ok := strings.CutPrefix(c.SigningKey, "env:"); ok {
-		key := os.Getenv(v)
-		if key == "" {
-			return fmt.Errorf("signingKey env var %q is not set", v)
-		}
-		c.SigningKey = key
+	var err error
+	c.SigningKey, err = resolveEnvRef("signingKey", c.SigningKey)
+	if err != nil {
+		return err
+	}
+	c.SecretsKey, err = resolveEnvRef("secretsKey", c.SecretsKey)
+	if err != nil {
+		return err
 	}
 	if c.Bucket == "" {
 		return fmt.Errorf("bucket is required")
@@ -96,4 +98,16 @@ func (c *Config) validate() error {
 		return fmt.Errorf("leaseDuration must be at least 5m")
 	}
 	return nil
+}
+
+func resolveEnvRef(field, value string) (string, error) {
+	v, ok := strings.CutPrefix(value, "env:")
+	if !ok {
+		return value, nil
+	}
+	key := os.Getenv(v)
+	if key == "" {
+		return "", fmt.Errorf("%s env var %q is not set", field, v)
+	}
+	return key, nil
 }
