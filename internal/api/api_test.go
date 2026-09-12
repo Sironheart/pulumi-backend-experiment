@@ -21,6 +21,7 @@ import (
 
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authn"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/config"
+	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/secrets"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/store"
 )
 
@@ -376,12 +377,12 @@ func (f *fakeStore) GetLock(_ context.Context, org, project, stack string) (*sto
 
 type fakeCrypter struct{}
 
-func (fakeCrypter) Encrypt(_ context.Context, plaintext []byte) (string, error) {
-	return "v1:fake:" + string(plaintext), nil
+func (fakeCrypter) Encrypt(_ context.Context, _, _, _ string, plaintext []byte) (string, error) {
+	return "v2:fake:" + string(plaintext), nil
 }
 
-func (fakeCrypter) Decrypt(_ context.Context, ciphertext string) ([]byte, error) {
-	p, ok := strings.CutPrefix(ciphertext, "v1:fake:")
+func (fakeCrypter) Decrypt(_ context.Context, _, _, _, ciphertext string) ([]byte, error) {
+	p, ok := strings.CutPrefix(ciphertext, "v2:fake:")
 	if !ok {
 		return nil, errors.New("bad ciphertext")
 	}
@@ -409,6 +410,10 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
+	return newHarnessWithCrypter(t, fakeCrypter{})
+}
+
+func newHarnessWithCrypter(t *testing.T, crypter Crypter) *harness {
 	t.Helper()
 	cfg := &config.Config{
 		Issuer:        "https://example.com",
@@ -419,11 +424,10 @@ func newHarness(t *testing.T) *harness {
 		LeaseDuration: 5 * time.Minute,
 		Bucket:        "test-bucket",
 		Region:        "us-east-1",
-		KMSKeyArn:     "test-key",
 	}
 	issuer := &authn.TokenIssuer{Key: []byte("test-signing-key"), TTL: time.Hour}
 	fs := newFakeStore()
-	srv := NewServer(cfg, issuer, fakeOIDC{identity: authn.Identity{Username: "steffen@example.com", Groups: []string{"admins"}}}, fs, fakeCrypter{})
+	srv := NewServer(cfg, issuer, fakeOIDC{identity: authn.Identity{Username: "steffen@example.com", Groups: []string{"admins"}}}, fs, crypter)
 	return &harness{server: srv, issuer: issuer, store: fs}
 }
 
@@ -1543,11 +1547,32 @@ func TestEncryptDecrypt(t *testing.T) {
 	}
 }
 
+func TestEncryptBindsCiphertextToStack(t *testing.T) {
+	crypter, err := secrets.NewCrypter("test-signing-key", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarnessWithCrypter(t, crypter)
+	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "acme", "api", "other")
+
+	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/encrypt", map[string]any{"plaintext": "aGVsbG8="})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("encrypt: %d %s", rec.Code, rec.Body)
+	}
+	ciphertext := decode[map[string]any](t, rec)["ciphertext"]
+
+	rec = h.authed(t, "POST", "/api/stacks/acme/api/other/decrypt", map[string]any{"ciphertext": ciphertext})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("decrypt with a different stack: status = %d, body = %s", rec.Code, rec.Body)
+	}
+}
+
 func TestBatchDecryptKeysPlaintextsByBase64Ciphertext(t *testing.T) {
 	h := newHarness(t)
 	createStack(t, h, "acme", "api", "dev")
 
-	ciphertext := base64.StdEncoding.EncodeToString([]byte("v1:fake:hello"))
+	ciphertext := base64.StdEncoding.EncodeToString([]byte("v2:fake:hello"))
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/batch-decrypt", map[string]any{
 		"ciphertexts": []string{ciphertext},
 	})

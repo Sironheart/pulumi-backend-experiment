@@ -13,7 +13,6 @@ import (
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/api"
@@ -59,6 +58,12 @@ func main() {
 		}
 	}
 
+	crypter, err := secrets.NewCrypter(cfg.SigningKey, cfg.SecretsKey)
+	if err != nil {
+		slog.Error("secrets crypter", "error", err)
+		os.Exit(1)
+	}
+
 	// Ambient credential chain (env, AWS_PROFILE, IRSA, ...).
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
 	if err != nil {
@@ -66,10 +71,6 @@ func main() {
 		os.Exit(1)
 	}
 	st := store.NewS3Store(s3.NewFromConfig(awsCfg), cfg.Bucket)
-	var crypter api.Crypter
-	if cfg.KMSKeyArn != "" {
-		crypter = secrets.NewCrypter(kms.NewFromConfig(awsCfg), cfg.KMSKeyArn)
-	}
 
 	issuer := &authn.TokenIssuer{Key: []byte(cfg.SigningKey), TTL: cfg.TokenTTL}
 	handler := api.NewServer(cfg, issuer, oidcValidator, st, crypter)

@@ -4,8 +4,13 @@ issuer: https://sso.example.com
 # Client ID expected in the JWT "aud" claim
 clientId: <sso-client-id>
 
-# HMAC key for backend tokens. Prefer an env reference over committing a secret.
+# HMAC key for backend tokens and the default root for secrets encryption.
+# Use a stable, high-entropy value from an environment variable.
 signingKey: env:BACKEND_SIGNING_KEY
+
+# Optional base64-encoded 32-byte root for secrets encryption. Omit this to
+# derive a separate key from signingKey, with no additional setup.
+# secretsKey: env:BACKEND_SECRETS_KEY
 
 # Local-only: skip OIDC and accept any Pulumi token as the caller identity.
 # issuer, clientId, and signingKey become optional.
@@ -19,8 +24,3 @@ signingKey: env:BACKEND_SIGNING_KEY
 # AWS chain (env vars, AWS_PROFILE, IRSA, ...).
 bucket: my-pulumi-state
 region: eu-central-1
-
-# KMS key for service-side secrets encryption. Optional: without it the
-# encrypt/decrypt endpoints return 400 and stacks must use their own
-# passphrase/KMS secrets provider.
-kmsKeyArn: arn:aws:kms:eu-central-1:123456789012:key/00000000-0000-0000-0000-000000000000
