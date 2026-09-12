@@ -10,10 +10,9 @@ single S3 bucket. Written in Go, shipped as a container image.
   (checkpoints, update records, history).
 - **Locking**: S3 conditional writes (`If-None-Match: *`) with expiring leases;
   stale locks are breakable. Previews run lock-free.
-- **Secrets**: service-side envelope encryption via a single KMS key
-  (`GenerateDataKey` + AES-256-GCM). Optional — without `kmsKeyArn` the
-  encrypt/decrypt endpoints are disabled and stacks use their own secrets
-  provider.
+- **Secrets**: always-on service-managed AES-256-GCM encryption. A distinct
+  key is derived for each stack; its root is derived from `signingKey` by
+  default, or can be supplied as `secretsKey`.
 
 ## Decisions
 

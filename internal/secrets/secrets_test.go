@@ -1,154 +1,146 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"encoding/base64"
 	"strings"
 	"testing"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-type decryptKMS struct {
-	plaintextKey []byte
-	keyID        string
-}
+const (
+	testOrg     = "acme"
+	testProject = "api"
+	testStack   = "dev"
+)
 
-func (*decryptKMS) GenerateDataKey(context.Context, *kms.GenerateDataKeyInput, ...func(*kms.Options)) (*kms.GenerateDataKeyOutput, error) {
-	panic("unexpected GenerateDataKey call")
-}
-
-func (f *decryptKMS) Decrypt(_ context.Context, in *kms.DecryptInput, _ ...func(*kms.Options)) (*kms.DecryptOutput, error) {
-	f.keyID = aws.ToString(in.KeyId)
-	return &kms.DecryptOutput{Plaintext: f.plaintextKey}, nil
-}
-
-func flociKMS(t *testing.T) (*kms.Client, string) {
+func newTestCrypter(t *testing.T, signingKey, secretsKey string) *Crypter {
 	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "floci/floci:2.0.1",
-			ExposedPorts: []string{"4566/tcp"},
-			WaitingFor:   wait.ForListeningPort("4566/tcp"),
-		},
-		Started: true,
-	})
-	if err != nil {
-		t.Fatalf("start floci: %v", err)
-	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	endpoint, err := container.Endpoint(ctx, "http")
+	c, err := NewCrypter(signingKey, secretsKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion("us-east-1"),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := kms.NewFromConfig(cfg, func(o *kms.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
-	})
-	key, err := client.CreateKey(ctx, &kms.CreateKeyInput{Description: aws.String("test")})
-	if err != nil {
-		t.Fatalf("create key: %v", err)
-	}
-	return client, *key.KeyMetadata.Arn
+	return c
 }
 
-func TestDecryptEnvelopeWithKeyARN(t *testing.T) {
-	key := make([]byte, 32)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestCrypterRoundTrip(t *testing.T) {
+	c := newTestCrypter(t, "test-signing-key", "")
 	plaintext := []byte("my-secret-value")
-	nonce := make([]byte, gcm.NonceSize())
-	sealed := gcm.Seal(nonce, nonce, plaintext, nil)
-	keyARN := "arn:aws:kms:eu-central-1:123456789012:key/01234567-89ab-cdef-0123-456789abcdef"
-	ciphertext := strings.Join([]string{
-		"v1",
-		keyARN,
-		base64.StdEncoding.EncodeToString([]byte("encrypted-data-key")),
-		base64.StdEncoding.EncodeToString(sealed),
-	}, ":")
-	kmsClient := &decryptKMS{plaintextKey: key}
 
-	got, err := NewCrypter(kmsClient, keyARN).Decrypt(context.Background(), ciphertext)
-	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
-	}
-	if string(got) != string(plaintext) {
-		t.Errorf("Decrypt = %q, want %q", got, plaintext)
-	}
-	if kmsClient.keyID != keyARN {
-		t.Errorf("KMS key ID = %q, want %q", kmsClient.keyID, keyARN)
-	}
-}
-
-func TestEnvelopeRoundTrip(t *testing.T) {
-	client, keyARN := flociKMS(t)
-	c := NewCrypter(client, keyARN)
-	ctx := context.Background()
-
-	plaintext := []byte("my-secret-value")
-	ciphertext, err := c.Encrypt(ctx, plaintext)
+	ciphertext, err := c.Encrypt(context.Background(), testOrg, testProject, testStack, plaintext)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
-	if !strings.HasPrefix(ciphertext, "v1:") {
-		t.Errorf("ciphertext missing v1 prefix: %q", ciphertext)
+	if !strings.HasPrefix(ciphertext, ciphertextPrefix) {
+		t.Errorf("ciphertext missing %q prefix: %q", ciphertextPrefix, ciphertext)
 	}
 	if strings.Contains(ciphertext, string(plaintext)) {
 		t.Error("ciphertext contains plaintext")
 	}
 
-	got, err := c.Decrypt(ctx, ciphertext)
+	got, err := c.Decrypt(context.Background(), testOrg, testProject, testStack, ciphertext)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
-	if string(got) != string(plaintext) {
-		t.Errorf("round trip = %q", got)
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("Decrypt = %q, want %q", got, plaintext)
 	}
 }
 
-func TestDecryptRejectsGarbage(t *testing.T) {
-	client, keyARN := flociKMS(t)
-	c := NewCrypter(client, keyARN)
-	for _, input := range []string{"", "not-envelope", "v2:abc:def:ghi", "v1:!!:aa:bb"} {
-		if _, err := c.Decrypt(context.Background(), input); err == nil {
-			t.Errorf("Decrypt(%q) succeeded", input)
-		}
-	}
-}
-
-func TestEncryptUniqueDataKeys(t *testing.T) {
-	client, keyARN := flociKMS(t)
-	c := NewCrypter(client, keyARN)
+func TestCrypterUsesUniqueNonces(t *testing.T) {
+	c := newTestCrypter(t, "test-signing-key", "")
 	ctx := context.Background()
-	a, err := c.Encrypt(ctx, []byte("same"))
+	a, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("same"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := c.Encrypt(ctx, []byte("same"))
+	b, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("same"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a == b {
-		t.Error("identical ciphertexts for identical plaintexts — data key or nonce reused")
+		t.Error("identical ciphertexts for identical plaintexts — nonce reused")
+	}
+}
+
+func TestCrypterBindsCiphertextToStack(t *testing.T) {
+	c := newTestCrypter(t, "test-signing-key", "")
+	ctx := context.Background()
+	ciphertext, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Decrypt(ctx, testOrg, testProject, "other", ciphertext); err == nil {
+		t.Fatal("Decrypt succeeded for a different stack")
+	}
+}
+
+func TestCrypterUsesSigningKeyByDefault(t *testing.T) {
+	ctx := context.Background()
+	a := newTestCrypter(t, "first-signing-key", "")
+	b := newTestCrypter(t, "second-signing-key", "")
+	ciphertext, err := a.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Decrypt(ctx, testOrg, testProject, testStack, ciphertext); err == nil {
+		t.Fatal("Decrypt succeeded with a different signing key")
+	}
+}
+
+func TestCrypterUsesExplicitSecretsKey(t *testing.T) {
+	ctx := context.Background()
+	secretsKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, keySize))
+	a := newTestCrypter(t, "first-signing-key", secretsKey)
+	b := newTestCrypter(t, "second-signing-key", secretsKey)
+	ciphertext, err := a.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := b.Decrypt(ctx, testOrg, testProject, testStack, ciphertext)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if string(got) != "my-secret-value" {
+		t.Errorf("Decrypt = %q", got)
+	}
+}
+
+func TestNewCrypterRejectsInvalidKeys(t *testing.T) {
+	for name, tc := range map[string]struct {
+		signingKey string
+		secretsKey string
+	}{
+		"missing signing key": {secretsKey: ""},
+		"invalid base64":      {signingKey: "signing-key", secretsKey: "not-base64"},
+		"wrong key length": {
+			signingKey: "signing-key",
+			secretsKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, keySize-1)),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewCrypter(tc.signingKey, tc.secretsKey); err == nil {
+				t.Fatal("NewCrypter succeeded")
+			}
+		})
+	}
+}
+
+func TestCrypterRejectsInvalidCiphertext(t *testing.T) {
+	c := newTestCrypter(t, "test-signing-key", "")
+	ctx := context.Background()
+	ciphertext, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := ciphertext[:len(ciphertext)-1] + "A"
+	if strings.HasSuffix(ciphertext, "A") {
+		tampered = ciphertext[:len(ciphertext)-1] + "B"
+	}
+
+	for _, input := range []string{"", "not-a-ciphertext", "v1:legacy", "v2:!!!", tampered} {
+		if _, err := c.Decrypt(ctx, testOrg, testProject, testStack, input); err == nil {
+			t.Errorf("Decrypt(%q) succeeded", input)
+		}
 	}
 }
