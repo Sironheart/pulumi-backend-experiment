@@ -9,14 +9,15 @@ import (
 )
 
 const (
-	testOrg     = "acme"
-	testProject = "api"
-	testStack   = "dev"
+	testOrg        = "acme"
+	testProject    = "api"
+	testStack      = "dev"
+	testSecretsKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 )
 
-func newTestCrypter(t *testing.T, signingKey, secretsKey string) *Crypter {
+func newTestCrypter(t *testing.T, secretsKey string) *Crypter {
 	t.Helper()
-	c, err := NewCrypter(signingKey, secretsKey)
+	c, err := NewCrypter(secretsKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +25,7 @@ func newTestCrypter(t *testing.T, signingKey, secretsKey string) *Crypter {
 }
 
 func TestCrypterRoundTrip(t *testing.T) {
-	c := newTestCrypter(t, "test-signing-key", "")
+	c := newTestCrypter(t, testSecretsKey)
 	plaintext := []byte("my-secret-value")
 
 	ciphertext, err := c.Encrypt(context.Background(), testOrg, testProject, testStack, plaintext)
@@ -38,7 +39,9 @@ func TestCrypterRoundTrip(t *testing.T) {
 		t.Error("ciphertext contains plaintext")
 	}
 
-	got, err := c.Decrypt(context.Background(), testOrg, testProject, testStack, ciphertext)
+	// A new instance must decrypt persisted ciphertext with the same key.
+	restarted := newTestCrypter(t, testSecretsKey)
+	got, err := restarted.Decrypt(context.Background(), testOrg, testProject, testStack, ciphertext)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -48,7 +51,7 @@ func TestCrypterRoundTrip(t *testing.T) {
 }
 
 func TestCrypterUsesUniqueNonces(t *testing.T) {
-	c := newTestCrypter(t, "test-signing-key", "")
+	c := newTestCrypter(t, testSecretsKey)
 	ctx := context.Background()
 	a, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("same"))
 	if err != nil {
@@ -64,7 +67,7 @@ func TestCrypterUsesUniqueNonces(t *testing.T) {
 }
 
 func TestCrypterBindsCiphertextToStack(t *testing.T) {
-	c := newTestCrypter(t, "test-signing-key", "")
+	c := newTestCrypter(t, testSecretsKey)
 	ctx := context.Background()
 	ciphertext, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
 	if err != nil {
@@ -75,51 +78,14 @@ func TestCrypterBindsCiphertextToStack(t *testing.T) {
 	}
 }
 
-func TestCrypterUsesSigningKeyByDefault(t *testing.T) {
-	ctx := context.Background()
-	a := newTestCrypter(t, "first-signing-key", "")
-	b := newTestCrypter(t, "second-signing-key", "")
-	ciphertext, err := a.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.Decrypt(ctx, testOrg, testProject, testStack, ciphertext); err == nil {
-		t.Fatal("Decrypt succeeded with a different signing key")
-	}
-}
-
-func TestCrypterUsesExplicitSecretsKey(t *testing.T) {
-	ctx := context.Background()
-	secretsKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, keySize))
-	a := newTestCrypter(t, "first-signing-key", secretsKey)
-	b := newTestCrypter(t, "second-signing-key", secretsKey)
-	ciphertext, err := a.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := b.Decrypt(ctx, testOrg, testProject, testStack, ciphertext)
-	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
-	}
-	if string(got) != "my-secret-value" {
-		t.Errorf("Decrypt = %q", got)
-	}
-}
-
 func TestNewCrypterRejectsInvalidKeys(t *testing.T) {
-	for name, tc := range map[string]struct {
-		signingKey string
-		secretsKey string
-	}{
-		"missing signing key": {secretsKey: ""},
-		"invalid base64":      {signingKey: "signing-key", secretsKey: "not-base64"},
-		"wrong key length": {
-			signingKey: "signing-key",
-			secretsKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, keySize-1)),
-		},
+	for name, secretsKey := range map[string]string{
+		"missing secrets key": "",
+		"invalid base64":      "not-base64",
+		"wrong key length":    base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, keySize-1)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewCrypter(tc.signingKey, tc.secretsKey); err == nil {
+			if _, err := NewCrypter(secretsKey); err == nil {
 				t.Fatal("NewCrypter succeeded")
 			}
 		})
@@ -127,7 +93,7 @@ func TestNewCrypterRejectsInvalidKeys(t *testing.T) {
 }
 
 func TestCrypterRejectsInvalidCiphertext(t *testing.T) {
-	c := newTestCrypter(t, "test-signing-key", "")
+	c := newTestCrypter(t, testSecretsKey)
 	ctx := context.Background()
 	ciphertext, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
 	if err != nil {

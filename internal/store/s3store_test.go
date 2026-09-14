@@ -1,3 +1,5 @@
+//go:build integration
+
 package store
 
 import (
@@ -15,7 +17,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
-const flociImage = "floci/floci:2.0.1"
+const flociImage = "floci/floci:2.0.1@sha256:4e451c39c7bb88e3cd4f87e8fc0c25d5b47695a51185d521e2241fa00486e8eb"
 
 // startFloci runs a floci container and returns an S3 client pointed at it,
 // plus a created bucket name.

@@ -48,7 +48,7 @@ func main() {
 	defer stop()
 	var oidcValidator api.OIDCValidator
 	if cfg.NoAuth {
-		slog.Warn("noAuth enabled: OIDC disabled, all requests accepted")
+		slog.Warn("noAuth enabled: OIDC disabled, all requests accepted on loopback only", "addr", cfg.Listen)
 	} else {
 		var err error
 		oidcValidator, err = authn.NewOIDCValidator(ctx, cfg.Issuer, cfg.ClientID)
@@ -58,7 +58,7 @@ func main() {
 		}
 	}
 
-	crypter, err := secrets.NewCrypter(cfg.SigningKey, cfg.SecretsKey)
+	crypter, err := secrets.NewCrypter(cfg.SecretsKey)
 	if err != nil {
 		slog.Error("secrets crypter", "error", err)
 		os.Exit(1)
@@ -72,7 +72,13 @@ func main() {
 	}
 	st := store.NewS3Store(s3.NewFromConfig(awsCfg), cfg.Bucket)
 
-	issuer := &authn.TokenIssuer{Key: []byte(cfg.SigningKey), TTL: cfg.TokenTTL}
+	keys := make(map[string][]byte, len(cfg.SigningKeys))
+	for _, key := range cfg.SigningKeys {
+		keys[key.ID] = []byte(key.Key)
+	}
+	issuer := &authn.TokenIssuer{
+		Keys: keys, ActiveKeyID: cfg.ActiveSigningKey, TTL: cfg.TokenTTL,
+	}
 	handler := api.NewServer(cfg, issuer, oidcValidator, st, crypter)
 	server := newHTTPServer(cfg.Listen, handler)
 	listener, err := net.Listen("tcp", cfg.Listen)
@@ -93,6 +99,8 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       time.Minute,
+		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
 	}

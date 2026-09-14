@@ -9,8 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authn"
+	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authz"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/config"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/secrets"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/store"
@@ -41,6 +44,7 @@ type Server struct {
 	oidc    OIDCValidator
 	store   store.Store
 	crypter Crypter
+	authz   *authz.Authorizer
 	mux     *http.ServeMux
 }
 
@@ -49,7 +53,10 @@ const maxRequestBodyBytes = 32 << 20
 var errRequestTooLarge = errors.New("request body too large")
 
 func NewServer(cfg *config.Config, issuer *authn.TokenIssuer, oidc OIDCValidator, st store.Store, crypter Crypter) *Server {
-	s := &Server{cfg: cfg, issuer: issuer, oidc: oidc, store: st, crypter: crypter, mux: http.NewServeMux()}
+	s := &Server{
+		cfg: cfg, issuer: issuer, oidc: oidc, store: st, crypter: crypter,
+		authz: authz.New(cfg.Authorization), mux: http.NewServeMux(),
+	}
 	s.routes()
 	return s
 }
@@ -58,46 +65,46 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.mux.HandleFunc("POST /api/token/exchange", s.tokenExchange)
 
-	userAuthed := func(pattern string, h http.HandlerFunc) {
-		s.mux.Handle(pattern, s.authMiddleware(false, http.HandlerFunc(h)))
+	userAuthed := func(pattern string, action authz.Action, h http.HandlerFunc) {
+		s.mux.Handle(pattern, s.authMiddleware(false, action, http.HandlerFunc(h)))
 	}
-	updateAuthed := func(pattern string, h http.HandlerFunc) {
-		s.mux.Handle(pattern, s.authMiddleware(true, http.HandlerFunc(h)))
+	updateAuthed := func(pattern string, action authz.Action, h http.HandlerFunc) {
+		s.mux.Handle(pattern, s.authMiddleware(true, action, http.HandlerFunc(h)))
 	}
 
-	userAuthed("GET /api/capabilities", s.capabilities)
-	userAuthed("GET /api/user", s.whoami)
-	userAuthed("GET /api/user/organizations/default", s.defaultOrg)
-	userAuthed("GET /api/user/stacks", s.listUserStacks)
+	userAuthed("GET /api/capabilities", "", s.capabilities)
+	userAuthed("GET /api/user", "", s.whoami)
+	userAuthed("GET /api/user/organizations/default", "", s.defaultOrg)
+	userAuthed("GET /api/user/stacks", "", s.listUserStacks)
 
-	userAuthed("GET /api/stacks/{org}", s.listOrgStacks)
-	userAuthed("POST /api/stacks/{org}/{project}", s.createStack)
-	userAuthed("HEAD /api/stacks/{org}/{project}", s.headProject)
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}", s.getStack)
-	userAuthed("DELETE /api/stacks/{org}/{project}/{stack}", s.deleteStack)
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}/export", s.exportStack)
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}/export/{version}", s.exportStack)
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/import", s.importStack)
+	userAuthed("GET /api/stacks/{org}", "", s.listOrgStacks)
+	userAuthed("POST /api/stacks/{org}/{project}", "", s.createStack)
+	userAuthed("HEAD /api/stacks/{org}/{project}", "", s.headProject)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}", authz.Read, s.getStack)
+	userAuthed("DELETE /api/stacks/{org}/{project}/{stack}", authz.Delete, s.deleteStack)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}/export", authz.Read, s.exportStack)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}/export/{version}", authz.Read, s.exportStack)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/import", authz.Write, s.importStack)
 
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}/updates", s.getStackUpdates)
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}/updates/latest", s.getLatestUpdate)
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}/updates/{version}", s.getUpdateByVersion)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}/updates", authz.Read, s.getStackUpdates)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}/updates/latest", authz.Read, s.getLatestUpdate)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}/updates/{version}", authz.Read, s.getUpdateByVersion)
 
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/encrypt", s.encryptValue)
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/decrypt", s.decryptValue)
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/batch-encrypt", s.batchEncrypt)
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/batch-decrypt", s.batchDecrypt)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/encrypt", authz.Secrets, s.encryptValue)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/decrypt", authz.Secrets, s.decryptValue)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/batch-encrypt", authz.Secrets, s.batchEncrypt)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/batch-decrypt", authz.Secrets, s.batchDecrypt)
 
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}", s.createUpdate)
-	userAuthed("GET /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}", s.getUpdateStatus)
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}", s.startUpdate)
-	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpoint", s.patchCheckpoint)
-	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpointverbatim", s.patchCheckpointVerbatim)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/complete", s.completeUpdate)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/renew_lease", s.renewLease)
-	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/cancel", s.cancelUpdate)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events", s.discardEvents)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events/batch", s.discardEvents)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}", authz.Write, s.createUpdate)
+	userAuthed("GET /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}", authz.Read, s.getUpdateStatus)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}", authz.Write, s.startUpdate)
+	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpoint", authz.Write, s.patchCheckpoint)
+	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpointverbatim", authz.Write, s.patchCheckpointVerbatim)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/complete", authz.Write, s.completeUpdate)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/renew_lease", authz.Write, s.renewLease)
+	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/cancel", authz.Write, s.cancelUpdate)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events", authz.Write, s.discardEvents)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events/batch", authz.Write, s.discardEvents)
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -114,7 +121,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // authMiddleware accepts a backend user token or an update-scoped token in the
 // Authorization header. The Pulumi CLI uses the schemes "token" (user) and
 // "update-token" (update lease); "Bearer" is accepted for convenience.
-func (s *Server) authMiddleware(updateToken bool, next http.Handler) http.Handler {
+func (s *Server) authMiddleware(updateToken bool, action authz.Action, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scheme, raw := authorizationToken(r.Header.Get("Authorization"))
 		if !s.cfg.NoAuth && ((updateToken && scheme != "update-token") || (!updateToken && scheme == "update-token")) {
@@ -146,6 +153,10 @@ func (s *Server) authMiddleware(updateToken bool, next http.Handler) http.Handle
 			id = authn.IdentityFromToken(raw)
 			uc = nil
 		}
+		if !validRouteScope(r) {
+			writeError(w, http.StatusBadRequest, "invalid stack scope")
+			return
+		}
 		ctx := authn.ContextWithIdentity(r.Context(), id)
 		if uc != nil {
 			if uc.UpdateID != r.PathValue("updateID") ||
@@ -158,8 +169,50 @@ func (s *Server) authMiddleware(updateToken bool, next http.Handler) http.Handle
 			}
 			ctx = authn.WithUpdateClaims(ctx, uc)
 		}
-		next.ServeHTTP(w, r.WithContext(ctx))
+		authedRequest := r.WithContext(ctx)
+		if !s.cfg.NoAuth && !s.authz.HasAnyGrant(id.Groups) {
+			writeError(w, http.StatusForbidden, "access denied")
+			return
+		}
+		if action != "" && !s.authorize(w, authedRequest, action,
+			r.PathValue("org"), r.PathValue("project"), r.PathValue("stack")) {
+			return
+		}
+		next.ServeHTTP(w, authedRequest)
 	})
+}
+
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, action authz.Action, org, project, stack string) bool {
+	if s.cfg.NoAuth || s.authz.Allows(s.identity(r).Groups, action, org, project, stack) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "access denied")
+	return false
+}
+
+func (s *Server) authorizeProject(w http.ResponseWriter, r *http.Request, action authz.Action, org, project string) bool {
+	if s.cfg.NoAuth || s.authz.AllowsProject(s.identity(r).Groups, action, org, project) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "access denied")
+	return false
+}
+
+func validRouteScope(r *http.Request) bool {
+	for _, name := range []string{"org", "project", "stack", "updateID"} {
+		value := r.PathValue(name)
+		if value != "" && !validStorageSegment(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func validStorageSegment(value string) bool {
+	if value == "" || value == "." || value == ".." || !utf8.ValidString(value) || strings.ContainsAny(value, "/\\") {
+		return false
+	}
+	return !strings.ContainsFunc(value, unicode.IsControl)
 }
 
 func authorizationToken(header string) (string, string) {
@@ -177,6 +230,7 @@ func authorizationToken(header string) (string, string) {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }

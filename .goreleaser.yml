@@ -27,7 +27,7 @@ builds:
 kos:
   - id: pulumi-backend
     build: pulumi-backend
-    base_image: cgr.dev/chainguard/static
+    base_image: cgr.dev/chainguard/static:latest@sha256:bf639cba19ba56329e6907ac26a7afcdde57a80b6aa66d5100da6883196e6b82
     user: "65532"
     repositories:
       - "forgejo.siron.casa/{{ .Env.FORGEJO_REPOSITORY }}"
@@ -42,6 +42,7 @@ kos:
     creation_time: "{{ .CommitTimestamp }}"
     ko_data_creation_time: "{{ .CommitTimestamp }}"
     sbom: spdx
+    sbom_directory: dist/sbom
     labels:
       org.opencontainers.image.source: "https://forgejo.siron.casa/{{ .Env.FORGEJO_REPOSITORY }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
@@ -59,6 +60,15 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.spdx.json"
+
+docker_digest:
+  name_template: digests.txt
 
 changelog:
   use: git
@@ -89,3 +99,8 @@ release:
     name: '{{ index (split .Env.FORGEJO_REPOSITORY "/") 1 }}'
   mode: keep-existing
   prerelease: auto
+  preflight:
+    fail_on_error: true
+  extra_files:
+    - glob: ./dist/sbom/**/*
+  include_meta: true
