@@ -3,43 +3,6 @@ name: CI
 on:
   pull_request:
 
-env:
-  # renovate: datasource=github-releases depName=golangci/golangci-lint
-  GOLANGCI_LINT_VERSION: v2.13.2
-
 jobs:
-  validation:
-    runs-on: docker
-    steps:
-      - uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: https://code.forgejo.org/actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Tidy Go modules
-        run: go mod tidy
-
-      - name: Lint Go code
-        uses: https://github.com/golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
-          args: ./cmd/... ./internal/...
-          github-token: ""
-
-      - name: Format Go code
-        run: golangci-lint fmt
-
-      - name: Run Go tests
-        run: go test ./...
-
-      - name: Build binary
-        run: go build -trimpath ./...
-
-      - name: Check source files
-        uses: https://github.com/tj-actions/verify-changed-files@a1c6acee9df209257a246f2cc6ae8cb6581c1edf # v20.0.4
-        with:
-          fail-if-changed: true
-          fail-message: Go module or formatting changes must be committed.
+  validate:
+    uses: ./.forgejo/workflows/validation.yml

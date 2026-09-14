@@ -1,3 +1,5 @@
+//go:build integration
+
 package authn
 
 import (
@@ -11,7 +13,7 @@ import (
 	keycloak "github.com/stillya/testcontainers-keycloak"
 )
 
-const keycloakImage = "keycloak/keycloak:26.0"
+const keycloakImage = "keycloak/keycloak:26.0@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858"
 
 // Integration test: validate tokens issued by a real OIDC provider.
 func TestValidateAgainstKeycloak(t *testing.T) {

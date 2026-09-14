@@ -4,20 +4,33 @@ issuer: https://sso.example.com
 # Client ID expected in the JWT "aud" claim
 clientId: <sso-client-id>
 
-# HMAC key for backend tokens and the default root for secrets encryption.
-# Use a stable, high-entropy value from an environment variable.
-signingKey: env:BACKEND_SIGNING_KEY
+# HMAC keyring for backend tokens. Generate each key with, for example,
+# `openssl rand -base64 32`. Retain previous keys until their tokens expire.
+signingKeys:
+  - id: current
+    key: env:BACKEND_SIGNING_KEY
+activeSigningKey: current
 
-# Optional base64-encoded 32-byte root for secrets encryption. Omit this to
-# derive a separate key from signingKey, with no additional setup.
-# secretsKey: env:BACKEND_SECRETS_KEY
+# Required base64-encoded 32-byte root for service-managed secret encryption.
+# Keep it independent from signing keys so they can rotate separately.
+secretsKey: env:BACKEND_SECRETS_KEY
+
+# OIDC group-to-stack access rules. Rules are additive and default-deny.
+# Scope values support only exact values or a full-segment "*" wildcard.
+authorization:
+  - groups: [pulumi-admins]
+    organizations: ["*"]
+    projects: ["*"]
+    stacks: ["*"]
+    actions: [read, write, delete, secrets]
 
 # Local-only: skip OIDC and accept any Pulumi token as the caller identity.
-# issuer, clientId, and signingKey become optional.
+# This requires an explicit loopback listen address and still requires keys.
 # noAuth: true
+# listen: 127.0.0.1:8080
 
 # listen: ":8080"        # default
-# tokenTTL: 720h         # default: 30d backend token lifetime
+# tokenTTL: 24h          # default backend token lifetime
 # leaseDuration: 5m      # default: update lease lifetime
 
 # The single S3 bucket holding all state. Credentials come from the ambient

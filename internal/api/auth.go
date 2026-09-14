@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authn"
+	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authz"
 )
 
 type tokenExchangeRequest struct {
@@ -38,6 +39,10 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !s.cfg.NoAuth && !s.authz.HasAnyGrant(id.Groups) {
+		writeError(w, http.StatusForbidden, "access denied")
+		return
+	}
 	tok, err := s.issuer.Issue(id)
 	if err != nil {
 		internalError(w, r, err, "token issuance failed")
@@ -53,7 +58,7 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	id := s.identity(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":            id.Username,
+		"id":            id.Principal(),
 		"githubLogin":   id.Username,
 		"name":          id.Username,
 		"email":         "",
@@ -96,10 +101,17 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request, org string) 
 	}
 	out := []summary{}
 	for _, stack := range stacks {
+		if !s.authorizeListStack(r, stack.Org, stack.Project, stack.Name) {
+			continue
+		}
 		if project != "" && stack.Project != project {
 			continue
 		}
 		out = append(out, summary{OrgName: stack.Org, ProjectName: stack.Project, StackName: stack.Name})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"stacks": out})
+}
+
+func (s *Server) authorizeListStack(r *http.Request, org, project, stack string) bool {
+	return s.cfg.NoAuth || s.authz.Allows(s.identity(r).Groups, authz.Read, org, project, stack)
 }

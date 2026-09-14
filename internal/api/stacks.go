@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authz"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/store"
 )
 
@@ -25,11 +26,14 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, err, "invalid request")
 		return
 	}
-	if req.StackName == "" {
+	if !validStorageSegment(req.StackName) {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 	org, project := r.PathValue("org"), r.PathValue("project")
+	if !s.authorize(w, r, authz.Write, org, project, req.StackName) {
+		return
+	}
 	created, err := s.store.CreateStack(r.Context(), org, project, req.StackName)
 	if err != nil {
 		if s.storeError(w, err) {
@@ -58,7 +62,7 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 				project,
 				req.StackName,
 				created.Incarnation,
-				s.identity(r).Username,
+				s.identity(r).Principal(),
 			); rollbackErr != nil {
 				err = errors.Join(err, fmt.Errorf("rolling back stack creation: %w", rollbackErr))
 			}
@@ -115,7 +119,10 @@ func (s *Server) rollbackFailedStackCreation(
 	)
 }
 
-func (s *Server) headProject(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) headProject(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeProject(w, r, authz.Read, r.PathValue("org"), r.PathValue("project")) {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -150,7 +157,7 @@ func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updateID := "delete-" + store.NewUpdateID()
-	owner := s.identity(r).Username
+	owner := s.identity(r).Principal()
 	lock, err := s.store.AcquireLock(
 		r.Context(),
 		org,
@@ -272,9 +279,11 @@ func (s *Server) exportStack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	if !json.Valid(raw) {
+		internalError(w, r, errors.New("stored checkpoint is not valid JSON"), "reading checkpoint failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(raw))
 }
 
 func (s *Server) importStack(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +297,7 @@ func (s *Server) importStack(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid deployment")
 		return
 	}
-	owner := s.identity(r).Username
+	owner := s.identity(r).Principal()
 	st, err := s.store.GetStack(r.Context(), org, project, stackName)
 	if err != nil {
 		s.writeStoreError(w, r, err, "reading stack failed")
