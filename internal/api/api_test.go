@@ -20,6 +20,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authn"
+	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/authz"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/config"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/secrets"
 	"forgejo.siron.casa/sironheart/pulumi-backend-experiment/internal/store"
@@ -404,9 +405,31 @@ func (f fakeOIDC) Validate(_ context.Context, raw string) (authn.Identity, error
 // --- harness ---
 
 type harness struct {
-	server http.Handler
-	issuer *authn.TokenIssuer
-	store  *fakeStore
+	server   http.Handler
+	issuer   *authn.TokenIssuer
+	store    *fakeStore
+	identity authn.Identity
+}
+
+const testSigningKey = "0123456789abcdef0123456789abcdef"
+
+func testIdentity(groups ...string) authn.Identity {
+	return authn.Identity{
+		Issuer:   "https://issuer.example.com",
+		Subject:  "steffen-subject",
+		Username: "steffen@example.com",
+		Groups:   groups,
+	}
+}
+
+func testAuthorization(groups ...string) []authz.Rule {
+	return []authz.Rule{{
+		Groups:        groups,
+		Organizations: []string{"*"},
+		Projects:      []string{"*"},
+		Stacks:        []string{"*"},
+		Actions:       []authz.Action{"*"},
+	}}
 }
 
 func newHarness(t *testing.T) *harness {
@@ -414,26 +437,35 @@ func newHarness(t *testing.T) *harness {
 }
 
 func newHarnessWithCrypter(t *testing.T, crypter Crypter) *harness {
+	return newHarnessWithRules(t, crypter, testAuthorization("admins"), testIdentity("admins"))
+}
+
+func newHarnessWithRules(t *testing.T, crypter Crypter, rules []authz.Rule, identity authn.Identity) *harness {
 	t.Helper()
 	cfg := &config.Config{
-		Issuer:        "https://example.com",
-		ClientID:      "cid",
-		SigningKey:    "test-signing-key",
-		Listen:        ":8080",
-		TokenTTL:      time.Hour,
-		LeaseDuration: 5 * time.Minute,
-		Bucket:        "test-bucket",
-		Region:        "us-east-1",
+		Issuer:           "https://example.com",
+		ClientID:         "cid",
+		SigningKeys:      []config.SigningKey{{ID: "test", Key: testSigningKey}},
+		ActiveSigningKey: "test",
+		SecretsKey:       "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+		Authorization:    rules,
+		Listen:           ":8080",
+		TokenTTL:         time.Hour,
+		LeaseDuration:    5 * time.Minute,
+		Bucket:           "test-bucket",
+		Region:           "us-east-1",
 	}
-	issuer := &authn.TokenIssuer{Key: []byte("test-signing-key"), TTL: time.Hour}
+	issuer := &authn.TokenIssuer{
+		Keys: map[string][]byte{"test": []byte(testSigningKey)}, ActiveKeyID: "test", TTL: time.Hour,
+	}
 	fs := newFakeStore()
-	srv := NewServer(cfg, issuer, fakeOIDC{identity: authn.Identity{Username: "steffen@example.com", Groups: []string{"admins"}}}, fs, crypter)
-	return &harness{server: srv, issuer: issuer, store: fs}
+	srv := NewServer(cfg, issuer, fakeOIDC{identity: identity}, fs, crypter)
+	return &harness{server: srv, issuer: issuer, store: fs, identity: identity}
 }
 
 func (h *harness) token(t *testing.T) string {
 	t.Helper()
-	tok, err := h.issuer.Issue(authn.Identity{Username: "steffen@example.com", Groups: []string{"admins"}})
+	tok, err := h.issuer.Issue(h.identity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,18 +560,22 @@ func TestWhoamiRequiresAuth(t *testing.T) {
 func newNoAuthHarness(t *testing.T) *harness {
 	t.Helper()
 	cfg := &config.Config{
-		NoAuth:        true,
-		SigningKey:    "test-signing-key",
-		Listen:        ":8080",
-		TokenTTL:      time.Hour,
-		LeaseDuration: 5 * time.Minute,
-		Bucket:        "test-bucket",
-		Region:        "us-east-1",
+		NoAuth:           true,
+		SigningKeys:      []config.SigningKey{{ID: "test", Key: testSigningKey}},
+		ActiveSigningKey: "test",
+		SecretsKey:       "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+		Listen:           "127.0.0.1:8080",
+		TokenTTL:         time.Hour,
+		LeaseDuration:    5 * time.Minute,
+		Bucket:           "test-bucket",
+		Region:           "us-east-1",
 	}
-	issuer := &authn.TokenIssuer{Key: []byte(cfg.SigningKey), TTL: cfg.TokenTTL}
+	issuer := &authn.TokenIssuer{
+		Keys: map[string][]byte{"test": []byte(testSigningKey)}, ActiveKeyID: "test", TTL: cfg.TokenTTL,
+	}
 	fs := newFakeStore()
 	srv := NewServer(cfg, issuer, nil, fs, fakeCrypter{})
-	return &harness{server: srv, issuer: issuer, store: fs}
+	return &harness{server: srv, issuer: issuer, store: fs, identity: testIdentity("admins")}
 }
 
 func TestNoAuthWhoamiWithoutToken(t *testing.T) {
@@ -593,6 +629,125 @@ func TestNoAuthAllowsStackOpsWithoutOIDC(t *testing.T) {
 	rec = h.do(t, "GET", "/api/stacks/acme/api/dev", nil, "Authorization", "token local-dev")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get: status = %d, body = %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRejectsUnsafeStackScopeSegments(t *testing.T) {
+	h := newNoAuthHarness(t)
+	for name, tc := range map[string]struct {
+		method string
+		path   string
+		body   any
+	}{
+		"stack name slash": {
+			method: http.MethodPost,
+			path:   "/api/stacks/acme/api",
+			body:   map[string]string{"stackName": "dev/prod"},
+		},
+		"encoded stack slash": {
+			method: http.MethodGet,
+			path:   "/api/stacks/acme/api/dev%2Fprod",
+		},
+		"encoded organization slash": {
+			method: http.MethodHead,
+			path:   "/api/stacks/acme%2Fother/api",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := h.do(t, tc.method, tc.path, tc.body, "Authorization", "token local-dev")
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+		})
+	}
+	if len(h.store.stacks) != 0 {
+		t.Errorf("created stacks = %v", h.store.stacks)
+	}
+}
+
+func TestAuthorizationScopesEveryStackAction(t *testing.T) {
+	rules := []authz.Rule{{
+		Groups:        []string{"developers"},
+		Organizations: []string{"acme"},
+		Projects:      []string{"api"},
+		Stacks:        []string{"dev"},
+		Actions:       []authz.Action{authz.Read, authz.Write},
+	}}
+	id := authn.Identity{
+		Issuer: "https://issuer.example.com", Subject: "alice", Username: "alice", Groups: []string{"developers"},
+	}
+	h := newHarnessWithRules(t, fakeCrypter{}, rules, id)
+	for _, stack := range []string{"dev", "prod"} {
+		if _, err := h.store.CreateStack(t.Context(), "acme", "api", stack); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if rec := h.authed(t, "GET", "/api/stacks/acme/api/dev", nil); rec.Code != http.StatusOK {
+		t.Fatalf("allowed read: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.authed(t, http.MethodHead, "/api/stacks/acme/api", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("allowed project head: %d %s", rec.Code, rec.Body)
+	}
+	for name, tc := range map[string]struct {
+		method string
+		path   string
+		body   any
+	}{
+		"other stack read":   {http.MethodGet, "/api/stacks/acme/api/prod", nil},
+		"other project head": {http.MethodHead, "/api/stacks/acme/other", nil},
+		"delete":             {http.MethodDelete, "/api/stacks/acme/api/dev?force=true", nil},
+		"decrypt":            {http.MethodPost, "/api/stacks/acme/api/dev/decrypt", map[string]string{"ciphertext": "aGVsbG8="}},
+		"create other":       {http.MethodPost, "/api/stacks/acme/api", map[string]string{"stackName": "prod"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rec := h.authed(t, tc.method, tc.path, tc.body); rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+		})
+	}
+
+	rec := h.authed(t, "GET", "/api/user/stacks", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list stacks: %d %s", rec.Code, rec.Body)
+	}
+	stacks := decode[map[string][]map[string]string](t, rec)["stacks"]
+	if len(stacks) != 1 || stacks[0]["stackName"] != "dev" {
+		t.Errorf("visible stacks = %v", stacks)
+	}
+}
+
+func TestAuthorizationRejectsUnmatchedIdentityAtTokenExchange(t *testing.T) {
+	rules := testAuthorization("developers")
+	h := newHarnessWithRules(t, fakeCrypter{}, rules, testIdentity("outsiders"))
+	rec := h.do(t, "POST", "/api/token/exchange", map[string]string{"token": "valid-oidc-token"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+}
+
+func TestUpdateTokenStillRequiresWriteAuthorization(t *testing.T) {
+	rules := []authz.Rule{{
+		Groups:        []string{"readers"},
+		Organizations: []string{"acme"},
+		Projects:      []string{"api"},
+		Stacks:        []string{"dev"},
+		Actions:       []authz.Action{authz.Read},
+	}}
+	id := authn.Identity{
+		Issuer: "https://issuer.example.com", Subject: "reader", Username: "reader", Groups: []string{"readers"},
+	}
+	h := newHarnessWithRules(t, fakeCrypter{}, rules, id)
+	token, _, err := h.issuer.IssueUpdate(id, authn.UpdateClaims{
+		UpdateID: "update-1", Org: "acme", Project: "api", Stack: "dev", Kind: "update",
+	}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := h.do(t, http.MethodPost, "/api/stacks/acme/api/dev/update/update-1/events",
+		map[string]any{"event": map[string]any{}}, "Authorization", "update-token "+token)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
 }
 
@@ -993,8 +1148,17 @@ func TestUpdateLifecycle(t *testing.T) {
 	}
 
 	// Latest + by-version.
-	if rec := h.authed(t, "GET", "/api/stacks/acme/api/dev/updates/latest", nil); rec.Code != http.StatusOK {
+	rec = h.authed(t, "GET", "/api/stacks/acme/api/dev/updates/latest", nil)
+	if rec.Code != http.StatusOK {
 		t.Errorf("latest: %d", rec.Code)
+	}
+	latest := decode[map[string]any](t, rec)
+	info, ok := latest["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("latest response has no info object: %v", latest)
+	}
+	if info["version"] != float64(1) || info["result"] != "succeeded" {
+		t.Errorf("latest info = %v", info)
 	}
 	if rec := h.authed(t, "GET", "/api/stacks/acme/api/dev/updates/1", nil); rec.Code != http.StatusOK {
 		t.Errorf("by version: %d", rec.Code)
@@ -1046,14 +1210,17 @@ func TestUntypedUpdateTokenIsRejected(t *testing.T) {
 	createStack(t, h, "acme", "api", "dev")
 	updateID, _ := createUpdate(t, h, "update")
 	untyped := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "steffen@example.com",
-		"upd": updateID,
-		"org": "acme",
-		"prj": "api",
-		"stk": "dev",
-		"exp": time.Now().Add(time.Minute).Unix(),
+		"sub":      testIdentity().Subject,
+		"oidc_iss": testIdentity().Issuer,
+		"upd":      updateID,
+		"org":      "acme",
+		"prj":      "api",
+		"stk":      "dev",
+		"iat":      time.Now().Unix(),
+		"exp":      time.Now().Add(time.Minute).Unix(),
 	})
-	untypedToken, err := untyped.SignedString(h.issuer.Key)
+	untyped.Header["kid"] = h.issuer.ActiveKeyID
+	untypedToken, err := untyped.SignedString(h.issuer.Keys[h.issuer.ActiveKeyID])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1238,7 @@ func TestLockRenewalUsesMigratedGeneration(t *testing.T) {
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
 		UpdateID: "legacy-update",
-		Owner:    "steffen@example.com",
+		Owner:    h.identity.Principal(),
 		ExpiresAt: time.Now().
 			Add(time.Minute),
 	}
@@ -1081,7 +1248,7 @@ func TestLockRenewalUsesMigratedGeneration(t *testing.T) {
 	h.store.renewGeneration = 7
 	h.store.mu.Unlock()
 	token, _, err := h.issuer.IssueUpdate(
-		authn.Identity{Username: "steffen@example.com"},
+		h.identity,
 		authn.UpdateClaims{
 			UpdateID: "legacy-update",
 			Org:      "acme",
@@ -1158,7 +1325,7 @@ func TestCreateUpdateReplayCommitsPendingRecord(t *testing.T) {
 	expiresAt := time.Now().Add(time.Minute)
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
-		UpdateID: "pending-update", Owner: "steffen@example.com",
+		UpdateID: "pending-update", Owner: h.identity.Principal(),
 		Generation: 1, ExpiresAt: expiresAt,
 	}
 	h.store.updates[key("acme", "api", "dev")+"/pending-update"] = &store.Update{
@@ -1436,7 +1603,7 @@ func TestDeleteStackResumesOwnedDeletionFence(t *testing.T) {
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
 		UpdateID:   "delete-previous-attempt",
-		Owner:      "steffen@example.com",
+		Owner:      h.identity.Principal(),
 		Generation: 1,
 		ExpiresAt:  time.Now().Add(time.Minute),
 	}
@@ -1548,7 +1715,7 @@ func TestEncryptDecrypt(t *testing.T) {
 }
 
 func TestEncryptBindsCiphertextToStack(t *testing.T) {
-	crypter, err := secrets.NewCrypter("test-signing-key", "")
+	crypter, err := secrets.NewCrypter("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1695,17 +1862,23 @@ func TestInternalErrorLogsUnderlyingCause(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	cfg := &config.Config{
-		Issuer:        "https://example.com",
-		ClientID:      "cid",
-		SigningKey:    "test-signing-key",
-		TokenTTL:      time.Hour,
-		LeaseDuration: 5 * time.Minute,
+		Issuer:           "https://example.com",
+		ClientID:         "cid",
+		SigningKeys:      []config.SigningKey{{ID: "test", Key: testSigningKey}},
+		ActiveSigningKey: "test",
+		SecretsKey:       "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+		Authorization:    testAuthorization("admins"),
+		TokenTTL:         time.Hour,
+		LeaseDuration:    5 * time.Minute,
 	}
-	issuer := &authn.TokenIssuer{Key: []byte("test-signing-key"), TTL: time.Hour}
+	issuer := &authn.TokenIssuer{
+		Keys: map[string][]byte{"test": []byte(testSigningKey)}, ActiveKeyID: "test", TTL: time.Hour,
+	}
 	st := &errStore{fakeStore: newFakeStore(), err: errors.New("s3 exploded")}
-	srv := NewServer(cfg, issuer, fakeOIDC{identity: authn.Identity{Username: "u"}}, st, fakeCrypter{})
+	id := authn.Identity{Issuer: "https://issuer.example.com", Subject: "u", Username: "u", Groups: []string{"admins"}}
+	srv := NewServer(cfg, issuer, fakeOIDC{identity: id}, st, fakeCrypter{})
 
-	tok, err := issuer.Issue(authn.Identity{Username: "u"})
+	tok, err := issuer.Issue(id)
 	if err != nil {
 		t.Fatal(err)
 	}

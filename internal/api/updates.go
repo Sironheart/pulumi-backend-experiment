@@ -44,13 +44,13 @@ func (s *Server) createUpdate(w http.ResponseWriter, r *http.Request) {
 			stackName,
 			st.Incarnation,
 			updateID,
-			s.identity(r).Username,
+			s.identity(r).Principal(),
 			s.cfg.LeaseDuration,
 		)
 		if err != nil {
 			var held *store.LockHeldError
 			if errors.As(err, &held) {
-				if held.Lock.Owner == s.identity(r).Username {
+				if held.Lock.Owner == s.identity(r).Principal() {
 					existing, getErr := s.store.GetUpdate(
 						r.Context(),
 						org,
@@ -605,7 +605,7 @@ func (s *Server) getLatestUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no updates")
 		return
 	}
-	writeJSON(w, http.StatusOK, updateInfo(updates[0]))
+	writeJSON(w, http.StatusOK, map[string]any{"info": updateInfo(updates[0])})
 }
 
 func (s *Server) getUpdateByVersion(w http.ResponseWriter, r *http.Request) {

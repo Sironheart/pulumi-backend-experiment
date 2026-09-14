@@ -2,13 +2,47 @@
 go = "1.27.1"
 golangci-lint = "2.13.2"
 pulumi = "3.261.0"
+goreleaser = "2.18.1"
+svu = "3.4.1"
+"go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
+"aqua:securego/gosec" = "2.29.0"
+syft = "1.51.1"
 
 [env]
 AWS_REGION = { default = "eu-central-1" }
 
 [tasks.test]
-description = "Run all tests"
-run = "go test ./..."
+description = "Run unit and integration tests"
+run = [{ task = "unit" }, { task = "integration" }]
+
+[tasks.hygiene]
+description = "Check module metadata and formatting"
+run = [
+	"go mod tidy -diff",
+	"go mod verify",
+	"golangci-lint run ./...",
+	"golangci-lint fmt --diff",
+]
+
+[tasks.unit]
+description = "Run unit tests"
+run = "go test -count=1 ./..."
+
+[tasks.integration]
+description = "Run Docker-backed integration tests"
+run = "go test -count=1 -tags=integration ./internal/authn ./internal/store"
+
+[tasks.contract]
+description = "Run the pinned Pulumi CLI contract test"
+run = "go test -count=1 -tags=contract ./internal/api -run '^TestPulumiCLIContract$'"
+
+[tasks.race]
+description = "Run the race detector"
+run = "CGO_ENABLED=1 go test -race -count=1 ./..."
+
+[tasks.security]
+description = "Run Go vulnerability and security scans"
+run = ["govulncheck ./...", "gosec ./..."]
 
 [tasks.lint]
 description = "Run golangci-lint"
@@ -17,6 +51,14 @@ run = "golangci-lint run ./..."
 [tasks.build]
 description = "Build pulumi-backend binary"
 run = "go build -o bin/pulumi-backend ./cmd/pulumi-backend"
+
+[tasks.ci-build]
+description = "Verify the Go build"
+run = ["go vet ./...", "go build -trimpath ./..."]
+
+[tasks.release-check]
+description = "Validate GoReleaser configuration"
+run = "goreleaser check"
 
 [tasks.run]
 description = "Run backend locally (needs config.yaml)"

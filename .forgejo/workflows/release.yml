@@ -1,16 +1,27 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+
+env:
+  MISE_CONFIG_DIR: ${{ forgejo.workspace }}/.tmp/mise-config
+  MISE_AUTO_INSTALL: "false"
+  GOCACHE: ${{ forgejo.workspace }}/.tmp/go-build
+  GOMODCACHE: ${{ forgejo.workspace }}/.tmp/go-mod
 
 concurrency:
   group: release-main
   cancel-in-progress: false
 
 jobs:
+  validate:
+    uses: ./.forgejo/workflows/validation.yml
+
   release:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -18,34 +29,42 @@ jobs:
           fetch-depth: 0
           token: ${{ forgejo.token }}
 
-      - uses: https://code.forgejo.org/actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: https://code.forgejo.org/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
+          path: |
+            ${{ env.GOCACHE }}
+            ${{ env.GOMODCACHE }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-release-${{ hashFiles('mise.lock', '**/go.sum') }}
 
-      # github-action-svu is unusable: its action.yaml has a typo (`descrription`)
-      # that forgejo-runner's strict schema validation rejects; unfixed upstream.
+      - uses: https://github.com/jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          version: "2026.9.6"
+          install_args: --locked go goreleaser svu syft
+          github_token: ""
+
       - name: Determine release version
         id: version
         run: |
-          go install github.com/caarlos0/svu/v3@v3.4.1
           current="$(svu current)"
           next="$(svu next --always)"
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-          echo "next=$next" >> "$GITHUB_OUTPUT"
-          if [ "$next" = "$current" ]; then
+          if git rev-parse --verify --quiet "refs/tags/$current" >/dev/null && \
+            [ "$(git rev-list -n 1 "$current")" = "$(git rev-parse HEAD)" ]; then
+            echo "release=$current" >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          elif [ "$next" = "$current" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
+            echo "release=$next" >> "$GITHUB_OUTPUT"
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            # reruns of a partially failed release must not fail on an existing tag
-            if git rev-parse --verify --quiet "refs/tags/$next" >/dev/null; then
-              echo "tag $next already exists, skipping tag creation"
-            else
-              git tag "$next"
-              git push origin "refs/tags/$next"
-            fi
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Tag release
+        if: steps.version.outputs.changed == 'true' && steps.version.outputs.tag_exists == 'false'
+        run: |
+          git tag "${{ steps.version.outputs.release }}"
+          git push origin "refs/tags/${{ steps.version.outputs.release }}"
 
       - name: Log in to Forgejo container registry
         if: steps.version.outputs.changed == 'true'
@@ -57,12 +76,8 @@ jobs:
 
       - name: Build and publish release
         if: steps.version.outputs.changed == 'true'
-        uses: https://github.com/goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
-        with:
-          distribution: goreleaser
-          version: "2.18.1"
-          args: release --clean --parallelism 1
+        run: goreleaser release --clean --parallelism 1
         env:
           GITEA_TOKEN: ${{ forgejo.token }}
-          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.next }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.release }}
           GOMEMLIMIT: 2GiB

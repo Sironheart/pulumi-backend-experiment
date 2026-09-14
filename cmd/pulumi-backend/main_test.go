@@ -14,6 +14,12 @@ func TestHTTPServerHasTimeouts(t *testing.T) {
 	if server.ReadHeaderTimeout <= 0 {
 		t.Fatal("ReadHeaderTimeout is not configured")
 	}
+	if server.ReadTimeout <= 0 {
+		t.Fatal("ReadTimeout is not configured")
+	}
+	if server.WriteTimeout <= 0 {
+		t.Fatal("WriteTimeout is not configured")
+	}
 	if server.IdleTimeout <= 0 {
 		t.Fatal("IdleTimeout is not configured")
 	}

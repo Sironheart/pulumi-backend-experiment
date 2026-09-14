@@ -1,23 +1,19 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
   "customManagers": [
     {
       "customType": "regex",
-      "description": "goreleaser-action version input",
-      "managerFilePatterns": ["/\\.forgejo/workflows/[^/]+\\.ya?ml$/"],
+      "description": "GoReleaser Ko base image digest",
+      "managerFilePatterns": ["/\\.goreleaser\\.ya?ml$/"],
       "matchStrings": [
-        "distribution:\\s*goreleaser\\s*\\n\\s*version:\\s*\"(?<currentValue>[^\"]+)\""
+        "base_image:\\s*(?<depName>cgr\\.dev/chainguard/static):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
       ],
-      "depNameTemplate": "goreleaser/goreleaser",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v?(?<version>.+)$"
-    },
-    {
-      "customType": "regex",
-      "description": "go install module pins in workflows",
-      "managerFilePatterns": ["/\\.forgejo/workflows/[^/]+\\.ya?ml$/"],
-      "matchStrings": ["go install (?<depName>\\S+)@(?<currentValue>\\S+)"],
-      "datasourceTemplate": "go"
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ]
 }

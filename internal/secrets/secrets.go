@@ -28,21 +28,10 @@ type Crypter struct {
 	rootKey []byte
 }
 
-// NewCrypter creates a service-managed crypter. An explicit secretsKey must
-// be a base64-encoded 32-byte key. When it is empty, the root key is derived
-// from signingKey so normal deployments need no additional configuration.
-func NewCrypter(signingKey, secretsKey string) (*Crypter, error) {
-	if secretsKey == "" {
-		if signingKey == "" {
-			return nil, errors.New("signingKey is required when secretsKey is empty")
-		}
-		key, err := hkdf.Key(sha256.New, []byte(signingKey), nil, rootKeyInfo, keySize)
-		if err != nil {
-			return nil, fmt.Errorf("derive root key: %w", err)
-		}
-		return &Crypter{rootKey: key}, nil
-	}
-
+// NewCrypter creates a service-managed crypter from an explicit,
+// base64-encoded 32-byte root key. Keeping this key separate from token
+// signing keys allows their independent rotation.
+func NewCrypter(secretsKey string) (*Crypter, error) {
 	key, err := base64.StdEncoding.DecodeString(secretsKey)
 	if err != nil {
 		return nil, fmt.Errorf("decode secretsKey: %w", err)

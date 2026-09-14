@@ -3,9 +3,30 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+const testSecretsKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+
+const validYAML = `
+issuer: https://sso.example.com
+clientId: app-client-id
+signingKeys:
+  - id: current
+    key: env:TEST_SIGNING_KEY
+activeSigningKey: current
+secretsKey: env:TEST_SECRETS_KEY
+authorization:
+  - groups: [pulumi-admins]
+    organizations: ["*"]
+    projects: ["*"]
+    stacks: ["*"]
+    actions: [read, write, delete, secrets]
+bucket: my-state-bucket
+region: eu-central-1
+`
 
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
@@ -16,42 +37,35 @@ func writeTempConfig(t *testing.T, content string) string {
 	return path
 }
 
-const validYAML = `
-issuer: https://sso.example.com
-clientId: app-client-id
-signingKey: env:TEST_SIGNING_KEY
-secretsKey: env:TEST_SECRETS_KEY
-listen: ":9090"
-tokenTTL: 720h
-leaseDuration: 6m
-bucket: my-state-bucket
-region: eu-central-1
-`
+func setTestKeys(t *testing.T) {
+	t.Helper()
+	t.Setenv("TEST_SIGNING_KEY", strings.Repeat("s", minimumSigningKeyBytes))
+	t.Setenv("TEST_SECRETS_KEY", testSecretsKey)
+}
 
 func TestLoadValidConfig(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "supersecret")
-	t.Setenv("TEST_SECRETS_KEY", "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
-	cfg, err := Load(writeTempConfig(t, validYAML))
+	setTestKeys(t)
+	cfg, err := Load(writeTempConfig(t, validYAML+`listen: ":9090"
+tokenTTL: 12h
+leaseDuration: 6m
+`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Issuer != "https://sso.example.com" {
-		t.Errorf("issuer = %q", cfg.Issuer)
+	if cfg.Issuer != "https://sso.example.com" || cfg.ClientID != "app-client-id" {
+		t.Errorf("OIDC config = %q/%q", cfg.Issuer, cfg.ClientID)
 	}
-	if cfg.SigningKey != "supersecret" {
-		t.Errorf("signingKey env ref not resolved, got %q", cfg.SigningKey)
+	if len(cfg.SigningKeys) != 1 || cfg.SigningKeys[0].Key != strings.Repeat("s", minimumSigningKeyBytes) {
+		t.Errorf("signingKeys = %+v", cfg.SigningKeys)
 	}
-	if cfg.SecretsKey != "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" {
-		t.Errorf("secretsKey env ref not resolved, got %q", cfg.SecretsKey)
+	if cfg.ActiveSigningKey != "current" || cfg.SecretsKey != testSecretsKey {
+		t.Errorf("active/secrets key = %q/%q", cfg.ActiveSigningKey, cfg.SecretsKey)
 	}
-	if cfg.Listen != ":9090" {
-		t.Errorf("listen = %q", cfg.Listen)
+	if len(cfg.Authorization) != 1 || cfg.Authorization[0].Groups[0] != "pulumi-admins" {
+		t.Errorf("authorization = %+v", cfg.Authorization)
 	}
-	if cfg.TokenTTL != 720*time.Hour {
-		t.Errorf("tokenTTL = %v", cfg.TokenTTL)
-	}
-	if cfg.LeaseDuration != 6*time.Minute {
-		t.Errorf("leaseDuration = %v", cfg.LeaseDuration)
+	if cfg.Listen != ":9090" || cfg.TokenTTL != 12*time.Hour || cfg.LeaseDuration != 6*time.Minute {
+		t.Errorf("listen/TTL/lease = %q/%v/%v", cfg.Listen, cfg.TokenTTL, cfg.LeaseDuration)
 	}
 	if cfg.Bucket != "my-state-bucket" || cfg.Region != "eu-central-1" {
 		t.Errorf("bucket/region = %q/%q", cfg.Bucket, cfg.Region)
@@ -59,208 +73,151 @@ func TestLoadValidConfig(t *testing.T) {
 }
 
 func TestDefaults(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
-	cfg, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
-`))
+	setTestKeys(t)
+	cfg, err := Load(writeTempConfig(t, validYAML))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Listen != ":8080" {
-		t.Errorf("default listen = %q, want :8080", cfg.Listen)
-	}
-	if cfg.TokenTTL != 720*time.Hour {
-		t.Errorf("default tokenTTL = %v, want 720h", cfg.TokenTTL)
-	}
-	if cfg.LeaseDuration != 5*time.Minute {
-		t.Errorf("default leaseDuration = %v, want 5m", cfg.LeaseDuration)
-	}
-	if cfg.SecretsKey != "" {
-		t.Errorf("default secretsKey = %q, want empty", cfg.SecretsKey)
+	if cfg.Listen != ":8080" || cfg.TokenTTL != 24*time.Hour || cfg.LeaseDuration != 5*time.Minute {
+		t.Errorf("defaults = %q/%v/%v", cfg.Listen, cfg.TokenTTL, cfg.LeaseDuration)
 	}
 }
 
 func TestRejectsUnknownFields(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
-	_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
-unexpectedField: typo
-`))
-	if err == nil {
+	setTestKeys(t)
+	if _, err := Load(writeTempConfig(t, validYAML+"unexpectedField: typo\n")); err == nil {
 		t.Fatal("unknown field accepted")
 	}
 }
 
 func TestRejectsMultipleDocuments(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
-	_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
----
-bucket: ignored
-`))
-	if err == nil {
+	setTestKeys(t)
+	if _, err := Load(writeTempConfig(t, validYAML+"---\nbucket: ignored\n")); err == nil {
 		t.Fatal("second YAML document accepted")
 	}
 }
 
 func TestRejectsInvalidDurations(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
+	setTestKeys(t)
 	for name, duration := range map[string]string{
 		"negative token TTL":      "tokenTTL: -1s",
 		"zero token TTL":          "tokenTTL: 0s",
 		"subsecond token TTL":     "tokenTTL: 999ms",
 		"one-second token TTL":    "tokenTTL: 1s",
+		"short lease duration":    "leaseDuration: 4m",
 		"negative lease duration": "leaseDuration: -1s",
 		"zero lease duration":     "leaseDuration: 0s",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
-`+duration))
-			if err == nil {
-				t.Fatal("invalid duration accepted")
+			if _, err := Load(writeTempConfig(t, validYAML+duration)); err == nil {
+				t.Fatal("Load succeeded")
 			}
 		})
 	}
 }
 
-func TestRejectsLeaseShorterThanCLILease(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
-	_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
-leaseDuration: 4m
-`))
-	if err == nil {
-		t.Fatal("lease shorter than five minutes accepted")
+func TestRejectsMissingSecurityConfiguration(t *testing.T) {
+	setTestKeys(t)
+	for name, yaml := range map[string]string{
+		"missing signing key":   strings.Replace(validYAML, "signingKeys:\n  - id: current\n    key: env:TEST_SIGNING_KEY\n", "", 1),
+		"missing active key":    strings.Replace(validYAML, "activeSigningKey: current\n", "", 1),
+		"missing secrets key":   strings.Replace(validYAML, "secretsKey: env:TEST_SECRETS_KEY\n", "", 1),
+		"invalid secrets key":   strings.Replace(validYAML, "secretsKey: env:TEST_SECRETS_KEY", "secretsKey: not-base64", 1),
+		"short secrets key":     strings.Replace(validYAML, "secretsKey: env:TEST_SECRETS_KEY", "secretsKey: AQE=", 1),
+		"missing authorization": strings.Replace(validYAML, "authorization:\n  - groups: [pulumi-admins]\n    organizations: [\"*\"]\n    projects: [\"*\"]\n    stacks: [\"*\"]\n    actions: [read, write, delete, secrets]\n", "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeTempConfig(t, yaml)); err == nil {
+				t.Fatal("Load succeeded")
+			}
+		})
+	}
+}
+
+func TestRejectsInvalidSigningKeyring(t *testing.T) {
+	setTestKeys(t)
+	for name, yaml := range map[string]string{
+		"short key":          strings.Replace(validYAML, "key: env:TEST_SIGNING_KEY", "key: short", 1),
+		"duplicate ID":       strings.Replace(validYAML, "activeSigningKey: current", "  - id: current\n    key: env:TEST_SIGNING_KEY\nactiveSigningKey: current", 1),
+		"unknown active key": strings.Replace(validYAML, "activeSigningKey: current", "activeSigningKey: next", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeTempConfig(t, yaml)); err == nil {
+				t.Fatal("Load succeeded")
+			}
+		})
 	}
 }
 
 func TestRejectsPlaceholderClientID(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
-	_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: replace-with-client-id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
-`))
-	if err == nil {
+	setTestKeys(t)
+	yaml := strings.Replace(validYAML, "clientId: app-client-id", "clientId: replace-with-client-id", 1)
+	if _, err := Load(writeTempConfig(t, yaml)); err == nil {
 		t.Fatal("placeholder clientId accepted")
 	}
 }
 
 func TestValidationErrors(t *testing.T) {
-	t.Setenv("TEST_SIGNING_KEY", "x")
-	cases := map[string]string{
-		"missing issuer": `
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-region: r
-`,
-		"missing signingKey": `
-issuer: https://example.com
-clientId: id
-bucket: b
-region: r
-`,
-		"missing bucket": `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-region: r
-`,
-		"missing region": `
-issuer: https://example.com
-clientId: id
-signingKey: env:TEST_SIGNING_KEY
-bucket: b
-`,
-	}
-	for name, yaml := range cases {
+	setTestKeys(t)
+	for name, yaml := range map[string]string{
+		"missing issuer": strings.Replace(validYAML, "issuer: https://sso.example.com\n", "", 1),
+		"missing bucket": strings.Replace(validYAML, "bucket: my-state-bucket\n", "", 1),
+		"missing region": strings.Replace(validYAML, "region: eu-central-1\n", "", 1),
+	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(writeTempConfig(t, yaml)); err == nil {
-				t.Error("expected error, got nil")
+				t.Fatal("Load succeeded")
 			}
 		})
 	}
 }
 
 func TestSigningKeyEnvMissing(t *testing.T) {
-	_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: env:DEFINITELY_NOT_SET_VAR
-bucket: b
-region: r
-`))
-	if err == nil {
-		t.Error("expected error for missing env var")
+	setTestKeys(t)
+	t.Setenv("TEST_SIGNING_KEY", "")
+	if _, err := Load(writeTempConfig(t, validYAML)); err == nil {
+		t.Error("expected error for missing signing key env var")
 	}
 }
 
 func TestSecretsKeyEnvMissing(t *testing.T) {
-	_, err := Load(writeTempConfig(t, `
-issuer: https://example.com
-clientId: id
-signingKey: explicit-signing-key
-secretsKey: env:DEFINITELY_NOT_SET_VAR
-bucket: b
-region: r
-`))
-	if err == nil {
+	setTestKeys(t)
+	t.Setenv("TEST_SECRETS_KEY", "")
+	if _, err := Load(writeTempConfig(t, validYAML)); err == nil {
 		t.Error("expected error for missing secretsKey env var")
 	}
 }
 
-func TestNoAuthSkipsOIDCAndSigningKey(t *testing.T) {
-	cfg, err := Load(writeTempConfig(t, `
+func TestNoAuthRequiresExplicitKeysAndLoopback(t *testing.T) {
+	setTestKeys(t)
+	noAuthYAML := `
 noAuth: true
+listen: 127.0.0.1:8080
+signingKeys:
+  - id: local
+    key: env:TEST_SIGNING_KEY
+activeSigningKey: local
+secretsKey: env:TEST_SECRETS_KEY
 bucket: b
 region: r
-`))
+`
+	cfg, err := Load(writeTempConfig(t, noAuthYAML))
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("Load noAuth config: %v", err)
 	}
-	if !cfg.NoAuth {
-		t.Error("NoAuth = false, want true")
+	if !cfg.NoAuth || len(cfg.Authorization) != 0 {
+		t.Errorf("noAuth config = %+v", cfg)
 	}
-	if cfg.SigningKey != defaultLocalSigningKey {
-		t.Errorf("signingKey = %q, want default local key", cfg.SigningKey)
-	}
-}
 
-func TestNoAuthKeepsExplicitSigningKey(t *testing.T) {
-	cfg, err := Load(writeTempConfig(t, `
-noAuth: true
-signingKey: explicit-dev-key
-bucket: b
-region: r
-`))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.SigningKey != "explicit-dev-key" {
-		t.Errorf("signingKey = %q", cfg.SigningKey)
+	for name, yaml := range map[string]string{
+		"wildcard listen": strings.Replace(noAuthYAML, "127.0.0.1:8080", ":8080", 1),
+		"missing key":     strings.Replace(noAuthYAML, "signingKeys:\n  - id: local\n    key: env:TEST_SIGNING_KEY\n", "", 1),
+		"missing secrets": strings.Replace(noAuthYAML, "secretsKey: env:TEST_SECRETS_KEY\n", "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeTempConfig(t, yaml)); err == nil {
+				t.Fatal("Load succeeded")
+			}
+		})
 	}
 }

@@ -1,0 +1,66 @@
+name: Validation
+
+on:
+  workflow_call:
+
+env:
+  MISE_CONFIG_DIR: ${{ forgejo.workspace }}/.tmp/mise-config
+  MISE_AUTO_INSTALL: "false"
+  GOCACHE: ${{ forgejo.workspace }}/.tmp/go-build
+  GOMODCACHE: ${{ forgejo.workspace }}/.tmp/go-mod
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: https://code.forgejo.org/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.GOCACHE }}
+            ${{ env.GOMODCACHE }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-checks-${{ hashFiles('mise.lock', '**/go.sum') }}
+      - uses: https://github.com/jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          version: "2026.9.6"
+          install_args: --locked go golangci-lint goreleaser go:golang.org/x/vuln/cmd/govulncheck aqua:securego/gosec
+          github_token: ""
+      - run: mise run hygiene
+      - run: mise run race
+      - run: mise run ci-build
+      - run: mise run security
+      - run: mise run release-check
+
+  integration:
+    runs-on: docker
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: https://code.forgejo.org/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.GOCACHE }}
+            ${{ env.GOMODCACHE }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-integration-${{ hashFiles('mise.lock', '**/go.sum') }}
+      - uses: https://github.com/jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          version: "2026.9.6"
+          install_args: --locked go
+          github_token: ""
+      - run: mise run integration
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: https://code.forgejo.org/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.GOCACHE }}
+            ${{ env.GOMODCACHE }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-contract-${{ hashFiles('mise.lock', '**/go.sum') }}
+      - uses: https://github.com/jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          version: "2026.9.6"
+          install_args: --locked go pulumi
+          github_token: ""
+      - run: mise run contract

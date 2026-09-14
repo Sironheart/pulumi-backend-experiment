@@ -1,0 +1,3 @@
+name: pulumi-backend-contract
+runtime: go
+description: Minimal program for the HTTP backend CLI contract test.

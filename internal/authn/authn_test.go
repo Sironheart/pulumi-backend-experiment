@@ -18,6 +18,34 @@ import (
 
 const testClientID = "test-client-id"
 
+func newTokenIssuer(key string, ttl time.Duration) *TokenIssuer {
+	return &TokenIssuer{
+		Keys:        map[string][]byte{"test": []byte(key)},
+		ActiveKeyID: "test",
+		TTL:         ttl,
+	}
+}
+
+func testIdentity(username string, groups ...string) Identity {
+	return Identity{
+		Issuer:   "https://issuer.example.com",
+		Subject:  username + "-subject",
+		Username: username,
+		Groups:   groups,
+	}
+}
+
+func signTestClaims(t *testing.T, issuer *TokenIssuer, claims jwt.MapClaims) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["kid"] = issuer.ActiveKeyID
+	raw, err := token.SignedString(issuer.Keys[issuer.ActiveKeyID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 // testIdP is a minimal OIDC IdP: discovery document + JWKS.
 func testIdP(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 	t.Helper()
@@ -87,6 +115,9 @@ func TestValidateOIDCToken(t *testing.T) {
 	if id.Username != "steffen@example.com" {
 		t.Errorf("username = %q", id.Username)
 	}
+	if id.Issuer != srv.URL || id.Subject != "user-sub" {
+		t.Errorf("stable identity = (%q, %q)", id.Issuer, id.Subject)
+	}
 	if len(id.Groups) != 2 || id.Groups[0] != "g1" {
 		t.Errorf("groups = %v", id.Groups)
 	}
@@ -130,8 +161,8 @@ func TestValidateRejects(t *testing.T) {
 }
 
 func TestBackendTokenRoundTrip(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	want := Identity{Username: "steffen@example.com", Groups: []string{"g1"}}
+	issuer := newTokenIssuer("secret", time.Hour)
+	want := testIdentity("steffen@example.com", "g1")
 	tok, err := issuer.Issue(want)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -140,32 +171,90 @@ func TestBackendTokenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if got.Username != want.Username || len(got.Groups) != 1 || got.Groups[0] != "g1" {
+	if got.Issuer != want.Issuer || got.Subject != want.Subject || got.Username != want.Username ||
+		len(got.Groups) != 1 || got.Groups[0] != "g1" {
 		t.Errorf("got %+v", got)
 	}
 }
 
+func TestBackendTokenKeyRotation(t *testing.T) {
+	old := &TokenIssuer{
+		Keys:        map[string][]byte{"old": []byte("old-secret")},
+		ActiveKeyID: "old",
+		TTL:         time.Hour,
+	}
+	oldToken, err := old.Issue(testIdentity("u", "g1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rotated := &TokenIssuer{
+		Keys:        map[string][]byte{"old": []byte("old-secret"), "new": []byte("new-secret")},
+		ActiveKeyID: "new",
+		TTL:         time.Hour,
+	}
+	if _, err := rotated.Verify(oldToken); err != nil {
+		t.Fatalf("Verify old token after rotation: %v", err)
+	}
+
+	newToken, err := rotated.Issue(testIdentity("u", "g1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _, err := jwt.NewParser().ParseUnverified(newToken, jwt.MapClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Header["kid"] != "new" {
+		t.Errorf("kid = %v, want new", parsed.Header["kid"])
+	}
+	if _, err := (&TokenIssuer{Keys: map[string][]byte{"new": []byte("new-secret")}}).Verify(oldToken); err == nil {
+		t.Fatal("old token remained valid after its key was removed")
+	}
+}
+
+func TestBackendTokenRejectsMissingKeyID(t *testing.T) {
+	issuer := newTokenIssuer("secret", time.Hour)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "u", "oidc_iss": "https://issuer.example.com", "typ": backendTokenType,
+		"aud": backendTokenAudience, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	encoded, err := token.SignedString(issuer.Keys["test"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := issuer.Verify(encoded); err == nil {
+		t.Fatal("token without kid accepted")
+	}
+}
+
 func TestBackendTokenRejects(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	tok, _ := issuer.Issue(Identity{Username: "u"})
+	issuer := newTokenIssuer("secret", time.Hour)
+	tok, err := issuer.Issue(testIdentity("u"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := issuer.Verify(tok + "tampered"); err == nil {
 		t.Error("tampered token accepted")
 	}
-	other := &TokenIssuer{Key: []byte("other-key"), TTL: time.Hour}
+	other := newTokenIssuer("other-key", time.Hour)
 	if _, err := other.Verify(tok); err == nil {
 		t.Error("wrong key accepted")
 	}
-	expired := &TokenIssuer{Key: []byte("secret"), TTL: -time.Hour}
-	tok, _ = expired.Issue(Identity{Username: "u"})
-	if _, err := expired.Verify(tok); err == nil {
+	tok = signTestClaims(t, issuer, jwt.MapClaims{
+		"sub": testIdentity("u").Subject, "oidc_iss": testIdentity("u").Issuer,
+		"iat": time.Now().Add(-2 * time.Hour).Unix(), "exp": time.Now().Add(-time.Hour).Unix(),
+		"typ": backendTokenType, "aud": backendTokenAudience,
+	})
+	if _, err := issuer.Verify(tok); err == nil {
 		t.Error("expired token accepted")
 	}
 }
 
 func TestBackendTokenRejectsUpdateToken(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	tok, _, err := issuer.IssueUpdate(Identity{Username: "u"}, UpdateClaims{
+	issuer := newTokenIssuer("secret", time.Hour)
+	tok, _, err := issuer.IssueUpdate(testIdentity("u"), UpdateClaims{
 		UpdateID: "update-1",
 		Org:      "acme",
 		Project:  "api",
@@ -180,12 +269,12 @@ func TestBackendTokenRejectsUpdateToken(t *testing.T) {
 }
 
 func TestTokenIssuerRejectsUnusableTTLs(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Second}
-	if _, err := issuer.Issue(Identity{Username: "u"}); err == nil {
+	issuer := newTokenIssuer("secret", time.Second)
+	if _, err := issuer.Issue(testIdentity("u")); err == nil {
 		t.Fatal("backend token accepted unusable TTL")
 	}
 	if _, _, err := issuer.IssueUpdate(
-		Identity{Username: "u"},
+		testIdentity("u"),
 		UpdateClaims{UpdateID: "update-1", Org: "acme", Project: "api", Stack: "dev", Kind: "update"},
 		time.Second,
 	); err == nil {
@@ -194,79 +283,71 @@ func TestTokenIssuerRejectsUnusableTTLs(t *testing.T) {
 }
 
 func TestBackendTokenRejectsWrongAudience(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u",
-		"typ": backendTokenType,
-		"aud": "another-service",
-		"exp": time.Now().Add(time.Hour).Unix(),
+	issuer := newTokenIssuer("secret", time.Hour)
+	raw := signTestClaims(t, issuer, jwt.MapClaims{
+		"sub":      "u",
+		"oidc_iss": "https://issuer.example.com",
+		"typ":      backendTokenType,
+		"aud":      "another-service",
+		"iat":      time.Now().Unix(),
+		"exp":      time.Now().Add(time.Hour).Unix(),
 	})
-	raw, err := token.SignedString(issuer.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := issuer.Verify(raw); err == nil {
 		t.Fatal("token with wrong audience accepted")
 	}
 }
 
 func TestBackendTokenRejectsTokenWithoutType(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":    "u",
-		"groups": []string{"g1"},
-		"exp":    time.Now().Add(time.Hour).Unix(),
+	issuer := newTokenIssuer("secret", time.Hour)
+	raw := signTestClaims(t, issuer, jwt.MapClaims{
+		"sub":      "u",
+		"oidc_iss": "https://issuer.example.com",
+		"groups":   []string{"g1"},
+		"iat":      time.Now().Unix(),
+		"exp":      time.Now().Add(time.Hour).Unix(),
 	})
-	raw, err := token.SignedString(issuer.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := issuer.Verify(raw); err == nil {
 		t.Fatal("token without type accepted as backend token")
 	}
 }
 
 func TestBackendTokenRejectsUntypedUpdateToken(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u",
-		"upd": "update-1",
-		"org": "acme",
-		"prj": "api",
-		"stk": "dev",
-		"exp": time.Now().Add(time.Hour).Unix(),
+	issuer := newTokenIssuer("secret", time.Hour)
+	raw := signTestClaims(t, issuer, jwt.MapClaims{
+		"sub":      "u",
+		"oidc_iss": "https://issuer.example.com",
+		"upd":      "update-1",
+		"org":      "acme",
+		"prj":      "api",
+		"stk":      "dev",
+		"iat":      time.Now().Unix(),
+		"exp":      time.Now().Add(time.Hour).Unix(),
 	})
-	raw, err := token.SignedString(issuer.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := issuer.Verify(raw); err == nil {
 		t.Fatal("untyped update token accepted as backend user token")
 	}
 }
 
 func TestVerifyScopedRejectsTokenWithoutType(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u",
-		"upd": "update-1",
-		"org": "acme",
-		"prj": "api",
-		"stk": "dev",
-		"exp": time.Now().Add(time.Minute).Unix(),
+	issuer := newTokenIssuer("secret", time.Hour)
+	raw := signTestClaims(t, issuer, jwt.MapClaims{
+		"sub":      "u",
+		"oidc_iss": "https://issuer.example.com",
+		"upd":      "update-1",
+		"org":      "acme",
+		"prj":      "api",
+		"stk":      "dev",
+		"iat":      time.Now().Unix(),
+		"exp":      time.Now().Add(time.Minute).Unix(),
 	})
-	raw, err := token.SignedString(issuer.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, _, err := issuer.VerifyScoped(raw); err == nil {
 		t.Fatal("token without type accepted as scoped token")
 	}
 }
 
 func TestMiddleware(t *testing.T) {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	tok, _ := issuer.Issue(Identity{Username: "u", Groups: []string{"g1"}})
+	issuer := newTokenIssuer("secret", time.Hour)
+	tok, _ := issuer.Issue(testIdentity("u", "g1"))
 
 	handler := Middleware(issuer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := IdentityFrom(r.Context())
@@ -301,8 +382,8 @@ func TestMiddleware(t *testing.T) {
 }
 
 func ExampleTokenIssuer_Issue() {
-	issuer := &TokenIssuer{Key: []byte("secret"), TTL: time.Hour}
-	tok, _ := issuer.Issue(Identity{Username: "u"})
+	issuer := newTokenIssuer("secret", time.Hour)
+	tok, _ := issuer.Issue(testIdentity("u"))
 	fmt.Println(len(tok) > 0)
 	// Output: true
 }
@@ -323,6 +404,8 @@ func TestIdentityFromToken(t *testing.T) {
 	}
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":                "https://issuer.example.com",
+		"sub":                "user-sub",
 		"preferred_username": "steffen@example.com",
 		"groups":             []any{"devs"},
 		"exp":                time.Now().Add(time.Hour).Unix(),
