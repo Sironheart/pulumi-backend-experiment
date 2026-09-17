@@ -1,7 +1,7 @@
 [tools]
 go = "1.27.1"
 golangci-lint = "2.13.2"
-pulumi = "3.261.0"
+pulumi = "3.263.0"
 goreleaser = "2.18.1"
 svu = "3.4.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
