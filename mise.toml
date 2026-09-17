@@ -6,7 +6,7 @@ goreleaser = "2.18.2"
 svu = "3.4.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
 "aqua:securego/gosec" = "2.29.0"
-syft = "1.51.1"
+syft = "1.52.0"
 
 [env]
 AWS_REGION = { default = "eu-central-1" }
