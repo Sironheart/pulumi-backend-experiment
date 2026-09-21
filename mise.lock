@@ -13,7 +13,19 @@ url = "https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_
 url_api = "https://api.github.com/repos/securego/gosec/releases/assets/530520762"
 provenance = "cosign"
 
+[tools."aqua:securego/gosec"."platforms.linux-arm64-musl"]
+checksum = "sha256:c71244ec8d37488fd479d0d26990968fee03ece48b305d8224ac0c1ebd66e87c"
+url = "https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/securego/gosec/releases/assets/530520762"
+provenance = "cosign"
+
 [tools."aqua:securego/gosec"."platforms.linux-x64"]
+checksum = "sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095"
+url = "https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/securego/gosec/releases/assets/530520801"
+provenance = "cosign"
+
+[tools."aqua:securego/gosec"."platforms.linux-x64-musl"]
 checksum = "sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095"
 url = "https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/securego/gosec/releases/assets/530520801"
@@ -133,7 +145,19 @@ url = "https://github.com/goreleaser/goreleaser/releases/download/v2.18.1/gorele
 url_api = "https://api.github.com/repos/goreleaser/goreleaser/releases/assets/546377096"
 provenance = "github-attestations"
 
+[tools.goreleaser."platforms.linux-arm64-musl"]
+checksum = "sha256:93dba7614308e167158bd26978e8275971fd4b9147e7f3c687a64f5939d42d27"
+url = "https://github.com/goreleaser/goreleaser/releases/download/v2.18.1/goreleaser_Linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/goreleaser/goreleaser/releases/assets/546377096"
+provenance = "github-attestations"
+
 [tools.goreleaser."platforms.linux-x64"]
+checksum = "sha256:0c6122af0ad8fd65638889bf7d3757148b2f80eeff9f079682f0655df66ec8e8"
+url = "https://github.com/goreleaser/goreleaser/releases/download/v2.18.1/goreleaser_Linux_x86_64.tar.gz"
+url_api = "https://api.github.com/repos/goreleaser/goreleaser/releases/assets/546377081"
+provenance = "github-attestations"
+
+[tools.goreleaser."platforms.linux-x64-musl"]
 checksum = "sha256:0c6122af0ad8fd65638889bf7d3757148b2f80eeff9f079682f0655df66ec8e8"
 url = "https://github.com/goreleaser/goreleaser/releases/download/v2.18.1/goreleaser_Linux_x86_64.tar.gz"
 url_api = "https://api.github.com/repos/goreleaser/goreleaser/releases/assets/546377081"
@@ -215,7 +239,19 @@ url = "https://github.com/caarlos0/svu/releases/download/v3.4.1/svu_3.4.1_linux_
 url_api = "https://api.github.com/repos/caarlos0/svu/releases/assets/410001856"
 provenance = "cosign"
 
+[tools.svu."platforms.linux-arm64-musl"]
+checksum = "sha256:801f310be2f91df86868a2de1f61fefaf06e3eb773431be7dde9765ecde4d21c"
+url = "https://github.com/caarlos0/svu/releases/download/v3.4.1/svu_3.4.1_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/caarlos0/svu/releases/assets/410001856"
+provenance = "cosign"
+
 [tools.svu."platforms.linux-x64"]
+checksum = "sha256:7ee8c91998c15109130638dc661a912d5f426e2f8642f6f6c04e6502be920770"
+url = "https://github.com/caarlos0/svu/releases/download/v3.4.1/svu_3.4.1_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/caarlos0/svu/releases/assets/410001859"
+provenance = "cosign"
+
+[tools.svu."platforms.linux-x64-musl"]
 checksum = "sha256:7ee8c91998c15109130638dc661a912d5f426e2f8642f6f6c04e6502be920770"
 url = "https://github.com/caarlos0/svu/releases/download/v3.4.1/svu_3.4.1_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/caarlos0/svu/releases/assets/410001859"
@@ -249,7 +285,17 @@ checksum = "sha256:a7fd2b784e6664acd44719270574f6cd8c6864fc2b1700bf9099bd1cccda7
 url = "https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_arm64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/532610134"
 
+[tools.syft."platforms.linux-arm64-musl"]
+checksum = "sha256:a7fd2b784e6664acd44719270574f6cd8c6864fc2b1700bf9099bd1cccda7d7f"
+url = "https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/532610134"
+
 [tools.syft."platforms.linux-x64"]
+checksum = "sha256:8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3"
+url = "https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/532610151"
+
+[tools.syft."platforms.linux-x64-musl"]
 checksum = "sha256:8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3"
 url = "https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/532610151"
