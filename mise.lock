@@ -284,33 +284,40 @@ specifiers = ["1.54.0"]
 checksum = "sha256:ee6d4566373a05b344bc6b5f1706f14419bf9338ba39ff686e247deefe9b8818"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_linux_arm64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117598"
+provenance = "cosign"
 
 [tools.syft."platforms.linux-arm64-musl"]
 checksum = "sha256:ee6d4566373a05b344bc6b5f1706f14419bf9338ba39ff686e247deefe9b8818"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_linux_arm64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117598"
+provenance = "cosign"
 
 [tools.syft."platforms.linux-x64"]
 checksum = "sha256:54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117627"
+provenance = "cosign"
 
 [tools.syft."platforms.linux-x64-musl"]
 checksum = "sha256:54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117627"
+provenance = "cosign"
 
 [tools.syft."platforms.macos-arm64"]
 checksum = "sha256:7e0bdad94c569fc6d5785c9a657bbae3d4c4e140ccb5eace3d0b5b6bc2b6dbcf"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117599"
+provenance = "cosign"
 
 [tools.syft."platforms.macos-x64"]
 checksum = "sha256:22b71725e388a4c0de385249c4bc1044f78a870f2894f34b43ba957e792145d7"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_darwin_amd64.tar.gz"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117610"
+provenance = "cosign"
 
 [tools.syft."platforms.windows-x64"]
 checksum = "sha256:77f4b472779058e819eec9a054753a5071a996aaa40db31a290f8b256748593f"
 url = "https://github.com/anchore/syft/releases/download/v1.54.0/syft_1.54.0_windows_amd64.zip"
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/604117608"
+provenance = "cosign"
