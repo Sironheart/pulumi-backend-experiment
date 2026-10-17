@@ -2,7 +2,7 @@
 go = "1.27.2"
 golangci-lint = "2.14.0"
 pulumi = "3.268.0"
-goreleaser = "2.18.2"
+goreleaser = "2.18.3"
 svu = "3.4.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
 "aqua:securego/gosec" = "2.29.0"
