@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"time"
@@ -48,8 +50,7 @@ func (s *Server) createUpdate(w http.ResponseWriter, r *http.Request) {
 			s.cfg.LeaseDuration,
 		)
 		if err != nil {
-			var held *store.LockHeldError
-			if errors.As(err, &held) {
+			if held, ok := errors.AsType[*store.LockHeldError](err); ok {
 				if held.Lock.Owner == s.identity(r).Principal() {
 					existing, getErr := s.store.GetUpdate(
 						r.Context(),
@@ -87,7 +88,7 @@ func (s *Server) createUpdate(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
-				slog.Warn("stack locked", "org", org, "project", project, "stack", stackName, "holder", held.Lock.UpdateID, "owner", held.Lock.Owner)
+				slog.WarnContext(r.Context(), "stack locked", "org", org, "project", project, "stack", stackName, "holder", held.Lock.UpdateID, "owner", held.Lock.Owner)
 			}
 			if s.storeError(w, err) {
 				return
@@ -98,7 +99,7 @@ func (s *Server) createUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.store.CreateUpdate(r.Context(), org, project, stackName, kind, updateID); err != nil {
 		if lock != nil {
-			_ = s.store.ReleaseLock(r.Context(), org, project, stackName, updateID, lock.Generation)
+			s.releaseLockOnExit(r.Context(), org, project, stackName, updateID, lock.Generation)
 		}
 		if s.storeError(w, err) {
 			return
@@ -106,7 +107,7 @@ func (s *Server) createUpdate(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err, "creating update failed")
 		return
 	}
-	slog.Info("update created", "org", org, "project", project, "stack", stackName, "kind", kind, "update", updateID)
+	slog.InfoContext(r.Context(), "update created", "org", org, "project", project, "stack", stackName, "kind", kind, "update", updateID)
 	writeJSON(w, http.StatusOK, map[string]any{"updateID": updateID})
 }
 
@@ -152,7 +153,7 @@ func (s *Server) startUpdate(w http.ResponseWriter, r *http.Request) {
 		generation = lock.Generation
 	}
 	if u.Status == "not-started" {
-		if err := s.store.StartUpdate(r.Context(), org, project, stackName, updateID); err != nil {
+		if err = s.store.StartUpdate(r.Context(), org, project, stackName, updateID); err != nil {
 			if s.storeError(w, err) {
 				return
 			}
@@ -226,11 +227,22 @@ func (s *Server) releaseUpdateLock(
 	generation uint64,
 ) error {
 	err := s.store.ReleaseLock(ctx, org, project, stackName, updateID, generation)
-	var held *store.LockHeldError
-	if errors.As(err, &held) {
+	if _, ok := errors.AsType[*store.LockHeldError](err); ok || err == nil {
 		return nil
 	}
-	return err
+	return fmt.Errorf("release lock: %w", err)
+}
+
+// releaseLockOnExit detaches from request cancellation: a client that
+// disconnects mid-request must not leave the stack locked until lease expiry.
+func (s *Server) releaseLockOnExit(
+	ctx context.Context,
+	org, project, stackName, updateID string,
+	generation uint64,
+) {
+	if err := s.releaseUpdateLock(context.WithoutCancel(ctx), org, project, stackName, updateID, generation); err != nil {
+		slog.WarnContext(ctx, "release stack lock", "org", org, "project", project, "stack", stackName, "update", updateID, "error", err)
+	}
 }
 
 func (s *Server) patchCheckpoint(w http.ResponseWriter, r *http.Request) {
@@ -247,11 +259,15 @@ func (s *Server) patchCheckpoint(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, err, "invalid checkpoint")
 		return
 	}
-	deployment, _ := json.Marshal(map[string]any{
+	deployment, err := json.Marshal(map[string]any{
 		"version":    req.Version,
 		"features":   req.Features,
 		"deployment": req.Deployment,
 	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid checkpoint")
+		return
+	}
 	s.saveCheckpointForUpdate(w, r, org, project, stackName, updateID, deployment)
 }
 
@@ -401,7 +417,7 @@ func (s *Server) completeUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	slog.Info("update completed", "org", org, "project", project, "stack", stackName, "update", updateID, "status", req.Status)
+	slog.InfoContext(r.Context(), "update completed", "org", org, "project", project, "stack", stackName, "update", updateID, "status", req.Status)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -436,7 +452,7 @@ func (s *Server) renewLease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		generation = lock.Generation
-		renewed, err := s.store.RenewLock(
+		renewed, renewErr := s.store.RenewLock(
 			r.Context(),
 			org,
 			project,
@@ -445,11 +461,8 @@ func (s *Server) renewLease(w http.ResponseWriter, r *http.Request) {
 			generation,
 			d,
 		)
-		if err != nil {
-			if s.storeError(w, err) {
-				return
-			}
-			internalError(w, r, err, "renewing lease failed")
+		if renewErr != nil {
+			s.writeStoreError(w, r, renewErr, "renewing lease failed")
 			return
 		}
 		generation = renewed.Generation
@@ -488,7 +501,7 @@ func (s *Server) cancelUpdate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if lock != nil && lock.UpdateID == updateID {
-				if err := s.releaseUpdateLock(r.Context(), org, project, stackName, updateID, lock.Generation); err != nil {
+				if err = s.releaseUpdateLock(r.Context(), org, project, stackName, updateID, lock.Generation); err != nil {
 					s.writeStoreError(w, r, err, "releasing update lock failed")
 					return
 				}
@@ -525,7 +538,7 @@ func (s *Server) cancelUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	slog.Info("update cancelled", "org", org, "project", project, "stack", stackName, "update", updateID)
+	slog.InfoContext(r.Context(), "update cancelled", "org", org, "project", project, "stack", stackName, "update", updateID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -587,10 +600,7 @@ func pageWindow(w http.ResponseWriter, r *http.Request, total int) (start, end i
 	if start > total {
 		start = total
 	}
-	end = start + pageSize
-	if end > total {
-		end = total
-	}
+	end = min(start+pageSize, total)
 	return start, end, true
 }
 
@@ -641,9 +651,7 @@ func historicalUpdates(updates []store.Update) []store.Update {
 
 func updateInfo(u store.Update) map[string]any {
 	changes := map[string]int{}
-	for k, v := range u.ResourceChanges {
-		changes[k] = v
-	}
+	maps.Copy(changes, u.ResourceChanges)
 	return map[string]any{
 		"kind":            u.Kind,
 		"startTime":       u.StartTime,

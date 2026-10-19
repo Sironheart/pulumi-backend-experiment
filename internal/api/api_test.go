@@ -350,7 +350,10 @@ func (f *fakeStore) RenewLock(_ context.Context, org, project, stack, updateID s
 	return l, nil
 }
 
-func (f *fakeStore) ReleaseLock(_ context.Context, org, project, stack, updateID string, generation uint64) error {
+func (f *fakeStore) ReleaseLock(ctx context.Context, org, project, stack, updateID string, generation uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := key(org, project, stack)
@@ -433,10 +436,12 @@ func testAuthorization(groups ...string) []authz.Rule {
 }
 
 func newHarness(t *testing.T) *harness {
+	t.Helper()
 	return newHarnessWithCrypter(t, fakeCrypter{})
 }
 
 func newHarnessWithCrypter(t *testing.T, crypter Crypter) *harness {
+	t.Helper()
 	return newHarnessWithRules(t, crypter, testAuthorization("admins"), testIdentity("admins"))
 }
 
@@ -484,7 +489,7 @@ func (h *harness) do(t *testing.T, method, path string, body any, headers ...str
 	} else {
 		reader = bytes.NewReader(nil)
 	}
-	req := httptest.NewRequest(method, path, reader)
+	req := httptest.NewRequestWithContext(t.Context(), method, path, reader)
 	for i := 0; i+1 < len(headers); i += 2 {
 		req.Header.Set(headers[i], headers[i+1])
 	}
@@ -496,6 +501,15 @@ func (h *harness) do(t *testing.T, method, path string, body any, headers ...str
 func (h *harness) authed(t *testing.T, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	return h.do(t, method, path, body, "Authorization", "token "+h.token(t))
+}
+
+func as[T any](t *testing.T, v any) T {
+	t.Helper()
+	out, ok := v.(T)
+	if !ok {
+		t.Fatalf("got %T (%v), want %T", v, v, out)
+	}
+	return out
 }
 
 func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
@@ -597,7 +611,7 @@ func TestNoAuthWhoamiUsesPresentedToken(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
 	resp := decode[map[string]any](t, rec)
-	if resp["githubLogin"] == "alice" || !strings.HasPrefix(resp["githubLogin"].(string), "local-") {
+	if resp["githubLogin"] == "alice" || !strings.HasPrefix(as[string](t, resp["githubLogin"]), "local-") {
 		t.Errorf("githubLogin leaks opaque token: %v", resp["githubLogin"])
 	}
 }
@@ -764,7 +778,7 @@ func TestNoAuthUpdateLifecycleWithArbitraryToken(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create update: %d %s", rec.Code, rec.Body)
 	}
-	updateID := decode[map[string]any](t, rec)["updateID"].(string)
+	updateID := as[string](t, decode[map[string]any](t, rec)["updateID"])
 
 	rec = h.do(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID, map[string]any{},
 		"Authorization", "token local-dev")
@@ -827,7 +841,7 @@ func TestStackCRUD(t *testing.T) {
 	}
 
 	// Duplicate → 409.
-	if rec := h.authed(t, "POST", "/api/stacks/acme/api", map[string]any{"stackName": "dev"}); rec.Code != http.StatusConflict {
+	if dup := h.authed(t, "POST", "/api/stacks/acme/api", map[string]any{"stackName": "dev"}); dup.Code != http.StatusConflict {
 		t.Errorf("duplicate: status = %d", rec.Code)
 	}
 
@@ -965,7 +979,7 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("export empty: status = %d", rec.Code)
 	}
 	empty := decode[map[string]any](t, rec)
-	if empty["version"].(float64) != 3 {
+	if as[float64](t, empty["version"]) != 3 {
 		t.Errorf("empty export = %v", empty)
 	}
 
@@ -984,7 +998,7 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("export: status = %d", rec.Code)
 	}
 	exported := decode[map[string]any](t, rec)
-	if exported["version"].(float64) != 3 {
+	if as[float64](t, exported["version"]) != 3 {
 		t.Errorf("exported = %v", exported)
 	}
 }
@@ -1011,9 +1025,45 @@ func TestDeleteStackWithResourcesRequiresForce(t *testing.T) {
 	}
 }
 
+func TestLockReleasedAfterClientDisconnect(t *testing.T) {
+	for name, tc := range map[string]struct {
+		method, path, body string
+		status             int
+	}{
+		"import": {
+			http.MethodPost, "/api/stacks/acme/api/dev/import",
+			`{"version":3,"deployment":{}}`, http.StatusOK,
+		},
+		"delete with resources": {
+			http.MethodDelete, "/api/stacks/acme/api/dev", "", http.StatusBadRequest,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			createStack(t, h, "dev")
+			h.store.checkpoint[key("acme", "api", "dev")] = json.RawMessage(
+				`{"version":3,"deployment":{"resources":[{"urn":"urn:pulumi:dev::api::x:y:Z::r"}]}}`,
+			)
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			req := httptest.NewRequestWithContext(ctx, tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "token "+h.token(t))
+			rec := httptest.NewRecorder()
+			h.server.ServeHTTP(rec, req)
+
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			if len(h.store.locks) != 0 {
+				t.Fatalf("stack lock left behind: %+v", h.store.locks)
+			}
+		})
+	}
+}
+
 func TestDeleteStackFailsClosedOnCheckpointReadError(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	h.store.checkpointErr = errors.New("s3 unavailable")
 
 	rec := h.authed(t, "DELETE", "/api/stacks/acme/api/dev", nil)
@@ -1027,7 +1077,7 @@ func TestDeleteStackFailsClosedOnCheckpointReadError(t *testing.T) {
 
 func TestDeleteStackFailsClosedOnMalformedCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	h.store.checkpoint[key("acme", "api", "dev")] = json.RawMessage(`{`)
 
 	rec := h.authed(t, "DELETE", "/api/stacks/acme/api/dev", nil)
@@ -1041,14 +1091,14 @@ func TestDeleteStackFailsClosedOnMalformedCheckpoint(t *testing.T) {
 
 // --- update lifecycle tests ---
 
-func createStack(t *testing.T, h *harness, org, project, stack string) {
+func createStack(t *testing.T, h *harness, stack string) {
 	t.Helper()
-	if rec := h.authed(t, "POST", "/api/stacks/"+org+"/"+project, map[string]any{"stackName": stack}); rec.Code != http.StatusOK {
+	if rec := h.authed(t, "POST", "/api/stacks/acme/api", map[string]any{"stackName": stack}); rec.Code != http.StatusOK {
 		t.Fatalf("create stack: %d %s", rec.Code, rec.Body)
 	}
 }
 
-func createUpdate(t *testing.T, h *harness, kind string) (updateID string, updateToken string) {
+func createUpdate(t *testing.T, h *harness, kind string) (updateID, updateToken string) {
 	t.Helper()
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/"+kind, map[string]any{
 		"name": "api", "runtime": "nodejs", "options": map[string]any{},
@@ -1082,7 +1132,7 @@ func createUpdate(t *testing.T, h *harness, kind string) (updateID string, updat
 
 func TestUpdateLifecycle(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 
 	// Checkpoint with update token.
@@ -1130,7 +1180,7 @@ func TestUpdateLifecycle(t *testing.T) {
 	// State exported matches checkpoint.
 	rec = h.authed(t, "GET", "/api/stacks/acme/api/dev/export", nil)
 	exported := decode[map[string]any](t, rec)
-	if exported["version"].(float64) != 3 {
+	if as[float64](t, exported["version"]) != 3 {
 		t.Errorf("export = %v", exported)
 	}
 	_ = deployment
@@ -1142,8 +1192,8 @@ func TestUpdateLifecycle(t *testing.T) {
 	if len(updates) != 1 {
 		t.Fatalf("history = %v", history)
 	}
-	u := updates[0].(map[string]any)
-	if u["kind"] != "update" || u["result"] != "succeeded" || u["version"].(float64) != 1 {
+	u := as[map[string]any](t, updates[0])
+	if u["kind"] != "update" || u["result"] != "succeeded" || as[float64](t, u["version"]) != 1 {
 		t.Errorf("history entry = %v", u)
 	}
 
@@ -1169,7 +1219,7 @@ func TestOperationKindsUseCLICanonicalUpdatePath(t *testing.T) {
 	for _, kind := range []string{"refresh", "destroy"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
-			createStack(t, h, "acme", "api", "dev")
+			createStack(t, h, "dev")
 			updateID, updateToken := createUpdate(t, h, kind)
 
 			rec := h.do(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID+"/complete",
@@ -1184,7 +1234,7 @@ func TestOperationKindsUseCLICanonicalUpdatePath(t *testing.T) {
 
 func TestUpdateTokenCannotAccessUserRoutes(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	_, updateToken := createUpdate(t, h, "update")
 
 	rec := h.do(t, "GET", "/api/user", nil, "Authorization", "update-token "+updateToken)
@@ -1195,7 +1245,7 @@ func TestUpdateTokenCannotAccessUserRoutes(t *testing.T) {
 
 func TestUpdateRoutesRequireUpdateTokenScheme(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 
 	rec := h.do(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID+"/renew_lease",
@@ -1207,7 +1257,7 @@ func TestUpdateRoutesRequireUpdateTokenScheme(t *testing.T) {
 
 func TestUntypedUpdateTokenIsRejected(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, _ := createUpdate(t, h, "update")
 	untyped := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":      testIdentity().Subject,
@@ -1234,7 +1284,7 @@ func TestUntypedUpdateTokenIsRejected(t *testing.T) {
 
 func TestLockRenewalUsesMigratedGeneration(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
 		UpdateID: "legacy-update",
@@ -1267,7 +1317,7 @@ func TestLockRenewalUsesMigratedGeneration(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("lock migration renewal: status = %d, body = %s", rec.Code, rec.Body)
 	}
-	renewed := decode[map[string]any](t, rec)["token"].(string)
+	renewed := as[string](t, decode[map[string]any](t, rec)["token"])
 	_, claims, err := h.issuer.VerifyScoped(renewed)
 	if err != nil || claims == nil || claims.Generation != 7 {
 		t.Fatalf("renewed claims = %+v, error = %v", claims, err)
@@ -1276,11 +1326,11 @@ func TestLockRenewalUsesMigratedGeneration(t *testing.T) {
 
 func TestStartUpdateRefreshesInitialLease(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/update", map[string]any{
 		"name": "api", "runtime": "nodejs",
 	})
-	updateID := decode[map[string]any](t, rec)["updateID"].(string)
+	updateID := as[string](t, decode[map[string]any](t, rec)["updateID"])
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")].ExpiresAt = time.Now().Add(time.Second)
 	h.store.mu.Unlock()
@@ -1300,7 +1350,7 @@ func TestStartUpdateRefreshesInitialLease(t *testing.T) {
 
 func TestCreateUpdateReplayReturnsExistingUpdate(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	path := "/api/stacks/acme/api/dev/update"
 	req := map[string]any{"name": "api", "runtime": "nodejs"}
 
@@ -1321,7 +1371,7 @@ func TestCreateUpdateReplayReturnsExistingUpdate(t *testing.T) {
 
 func TestCreateUpdateReplayCommitsPendingRecord(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	expiresAt := time.Now().Add(time.Minute)
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
@@ -1354,11 +1404,11 @@ func TestCreateUpdateReplayCommitsPendingRecord(t *testing.T) {
 
 func TestStartUpdateReplayReturnsLeaseToken(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	created := h.authed(t, "POST", "/api/stacks/acme/api/dev/update", map[string]any{
 		"name": "api", "runtime": "nodejs",
 	})
-	updateID := decode[map[string]any](t, created)["updateID"].(string)
+	updateID := as[string](t, decode[map[string]any](t, created)["updateID"])
 	path := "/api/stacks/acme/api/dev/update/" + updateID
 	if first := h.authed(t, "POST", path, map[string]any{}); first.Code != http.StatusOK {
 		t.Fatalf("first start: %d %s", first.Code, first.Body)
@@ -1377,11 +1427,11 @@ func TestCancelNotStartedUpdateUsesCLICanonicalKind(t *testing.T) {
 	for _, kind := range []string{"update", "refresh", "destroy"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
-			createStack(t, h, "acme", "api", "dev")
+			createStack(t, h, "dev")
 			created := h.authed(t, "POST", "/api/stacks/acme/api/dev/"+kind, map[string]any{
 				"name": "api", "runtime": "nodejs",
 			})
-			updateID := decode[map[string]any](t, created)["updateID"].(string)
+			updateID := as[string](t, decode[map[string]any](t, created)["updateID"])
 
 			rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID+"/cancel", nil)
 			if rec.Code != http.StatusNoContent {
@@ -1400,7 +1450,7 @@ func TestCancelNotStartedUpdateUsesCLICanonicalKind(t *testing.T) {
 
 func TestCompletedUpdateCannotRestart(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 	rec := h.do(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID+"/complete",
 		map[string]any{"status": "succeeded"}, "Authorization", "update-token "+updateToken)
@@ -1416,10 +1466,10 @@ func TestCompletedUpdateCannotRestart(t *testing.T) {
 
 func TestCompleteUpdateIsIdempotent(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 	path := "/api/stacks/acme/api/dev/update/" + updateID + "/complete"
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		rec := h.do(t, "POST", path, map[string]any{"status": "succeeded"},
 			"Authorization", "update-token "+updateToken)
 		if rec.Code != http.StatusNoContent {
@@ -1430,7 +1480,7 @@ func TestCompleteUpdateIsIdempotent(t *testing.T) {
 
 func TestCompleteRejectsNonterminalStatus(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 
 	rec := h.do(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID+"/complete",
@@ -1445,7 +1495,7 @@ func TestCompleteRejectsNonterminalStatus(t *testing.T) {
 
 func TestPreviewUsesCLICanonicalUpdatePath(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/preview", map[string]any{
 		"name": "api", "runtime": "nodejs",
@@ -1453,7 +1503,7 @@ func TestPreviewUsesCLICanonicalUpdatePath(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create preview: %d %s", rec.Code, rec.Body)
 	}
-	updateID := decode[map[string]any](t, rec)["updateID"].(string)
+	updateID := as[string](t, decode[map[string]any](t, rec)["updateID"])
 	rec = h.authed(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID, map[string]any{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start preview: %d %s", rec.Code, rec.Body)
@@ -1462,7 +1512,7 @@ func TestPreviewUsesCLICanonicalUpdatePath(t *testing.T) {
 	if started["version"] != float64(0) {
 		t.Fatalf("preview version = %v, want current version 0", started["version"])
 	}
-	updateToken := started["token"].(string)
+	updateToken := as[string](t, started["token"])
 
 	rec = h.do(t, "PATCH", "/api/stacks/acme/api/dev/update/"+updateID+"/checkpoint",
 		map[string]any{"version": 3, "deployment": map[string]any{}},
@@ -1481,7 +1531,7 @@ func TestPreviewUsesCLICanonicalUpdatePath(t *testing.T) {
 
 func TestPreviewDoesNotEnterUpdateHistory(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/preview", map[string]any{
 		"name": "api", "runtime": "nodejs",
 	})
@@ -1490,7 +1540,7 @@ func TestPreviewDoesNotEnterUpdateHistory(t *testing.T) {
 	}
 
 	rec = h.authed(t, "GET", "/api/stacks/acme/api/dev/updates", nil)
-	updates := decode[map[string]any](t, rec)["updates"].([]any)
+	updates := as[[]any](t, decode[map[string]any](t, rec)["updates"])
 	if len(updates) != 0 {
 		t.Fatalf("preview entered update history: %v", updates)
 	}
@@ -1498,7 +1548,7 @@ func TestPreviewDoesNotEnterUpdateHistory(t *testing.T) {
 
 func TestPreviewLeaseRenewalDoesNotRequireStackLock(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "preview")
 
 	rec := h.do(t, "POST", "/api/stacks/acme/api/dev/update/"+updateID+"/renew_lease",
@@ -1510,7 +1560,7 @@ func TestPreviewLeaseRenewalDoesNotRequireStackLock(t *testing.T) {
 
 func TestStaleUpdateCannotCheckpointAfterLockReplacement(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
@@ -1530,7 +1580,7 @@ func TestStaleUpdateCannotCheckpointAfterLockReplacement(t *testing.T) {
 
 func TestCheckpointIsFencedWhenLockChangesDuringWrite(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 	h.store.beforeSaveCheckpoint = func() {
 		h.store.mu.Lock()
@@ -1556,7 +1606,7 @@ func TestCheckpointIsFencedWhenLockChangesDuringWrite(t *testing.T) {
 
 func TestConcurrentUpdateConflict(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	createUpdate(t, h, "update") // holds the lock (never completed)
 
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/update", map[string]any{
@@ -1572,7 +1622,7 @@ func TestConcurrentUpdateConflict(t *testing.T) {
 
 func TestPreviewDoesNotLock(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	createUpdate(t, h, "update") // lock held
 	// Preview still allowed.
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/preview", map[string]any{
@@ -1585,7 +1635,7 @@ func TestPreviewDoesNotLock(t *testing.T) {
 
 func TestDeleteStackRejectsActiveUpdate(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	createUpdate(t, h, "update")
 
 	rec := h.authed(t, "DELETE", "/api/stacks/acme/api/dev?force=true", nil)
@@ -1599,7 +1649,7 @@ func TestDeleteStackRejectsActiveUpdate(t *testing.T) {
 
 func TestDeleteStackResumesOwnedDeletionFence(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	h.store.mu.Lock()
 	h.store.locks[key("acme", "api", "dev")] = &store.Lock{
 		UpdateID:   "delete-previous-attempt",
@@ -1617,7 +1667,7 @@ func TestDeleteStackResumesOwnedDeletionFence(t *testing.T) {
 
 func TestCancelReleasesLock(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, _ := createUpdate(t, h, "update")
 
 	// Cancel uses the user token, not the update token.
@@ -1636,10 +1686,10 @@ func TestCancelReleasesLock(t *testing.T) {
 
 func TestCancelUpdateIsIdempotent(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, _ := createUpdate(t, h, "update")
 	path := "/api/stacks/acme/api/dev/update/" + updateID + "/cancel"
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		rec := h.authed(t, "POST", path, nil)
 		if rec.Code != http.StatusNoContent {
 			t.Fatalf("cancel attempt %d: %d %s", attempt+1, rec.Code, rec.Body)
@@ -1649,15 +1699,19 @@ func TestCancelUpdateIsIdempotent(t *testing.T) {
 
 func TestGzipRequestBody(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	updateID, updateToken := createUpdate(t, h, "update")
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
-	_ = json.NewEncoder(gz).Encode(map[string]any{"version": 3, "deployment": map[string]any{"x": 1}})
-	_ = gz.Close()
+	if err := json.NewEncoder(gz).Encode(map[string]any{"version": 3, "deployment": map[string]any{"x": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	req := httptest.NewRequest("PATCH", "/api/stacks/acme/api/dev/update/"+updateID+"/checkpoint", &buf)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/api/stacks/acme/api/dev/update/"+updateID+"/checkpoint", &buf)
 	req.Header.Set("Authorization", "update-token "+updateToken)
 	req.Header.Set("Content-Encoding", "gzip")
 	rec := httptest.NewRecorder()
@@ -1679,7 +1733,7 @@ func TestRejectsOversizedGzipRequestBody(t *testing.T) {
 	_, _ = gz.Write([]byte(`"}`))
 	_ = gz.Close()
 
-	req := httptest.NewRequest("POST", "/api/token/exchange", &buf)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/token/exchange", &buf)
 	req.Header.Set("Content-Encoding", "gzip")
 	rec := httptest.NewRecorder()
 	h.server.ServeHTTP(rec, req)
@@ -1692,7 +1746,7 @@ func TestRejectsOversizedGzipRequestBody(t *testing.T) {
 
 func TestEncryptDecrypt(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/encrypt", map[string]any{"plaintext": "aGVsbG8="})
 	if rec.Code != http.StatusOK {
@@ -1720,8 +1774,8 @@ func TestEncryptBindsCiphertextToStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHarnessWithCrypter(t, crypter)
-	createStack(t, h, "acme", "api", "dev")
-	createStack(t, h, "acme", "api", "other")
+	createStack(t, h, "dev")
+	createStack(t, h, "other")
 
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/encrypt", map[string]any{"plaintext": "aGVsbG8="})
 	if rec.Code != http.StatusOK {
@@ -1737,7 +1791,7 @@ func TestEncryptBindsCiphertextToStack(t *testing.T) {
 
 func TestBatchDecryptKeysPlaintextsByBase64Ciphertext(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 
 	ciphertext := base64.StdEncoding.EncodeToString([]byte("v2:fake:hello"))
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/batch-decrypt", map[string]any{
@@ -1757,7 +1811,7 @@ func TestBatchDecryptKeysPlaintextsByBase64Ciphertext(t *testing.T) {
 
 func TestBatchEncryptRejectsTooManyItems(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	plaintexts := make([]string, 1001)
 	for i := range plaintexts {
 		plaintexts[i] = "eA=="
@@ -1773,7 +1827,7 @@ func TestBatchEncryptRejectsTooManyItems(t *testing.T) {
 
 func TestBatchEncryptAcceptsPulumiMaximum(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	plaintexts := make([]string, 1000)
 	for i := range plaintexts {
 		plaintexts[i] = "eA=="
@@ -1789,7 +1843,7 @@ func TestBatchEncryptAcceptsPulumiMaximum(t *testing.T) {
 
 func TestMaximumPlaintextEncryptDecryptRoundTrip(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	plaintext := bytes.Repeat([]byte("x"), 1<<20)
 
 	rec := h.authed(t, "POST", "/api/stacks/acme/api/dev/encrypt", map[string]any{
@@ -1810,7 +1864,7 @@ func TestMaximumPlaintextEncryptDecryptRoundTrip(t *testing.T) {
 
 func TestUpdateHistoryRejectsInvalidPagination(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 
 	for _, query := range []string{"page=invalid", "pageSize=-1", "pageSize=1001"} {
 		rec := h.authed(t, "GET", "/api/stacks/acme/api/dev/updates?"+query, nil)
@@ -1822,7 +1876,7 @@ func TestUpdateHistoryRejectsInvalidPagination(t *testing.T) {
 
 func TestUpdateHistoryReturnsAllEntriesByDefault(t *testing.T) {
 	h := newHarness(t)
-	createStack(t, h, "acme", "api", "dev")
+	createStack(t, h, "dev")
 	h.store.mu.Lock()
 	for version := 1; version <= 101; version++ {
 		updateID := fmt.Sprintf("update-%d", version)
@@ -1837,7 +1891,7 @@ func TestUpdateHistoryReturnsAllEntriesByDefault(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%q: status = %d, body = %s", query, rec.Code, rec.Body)
 		}
-		updates := decode[map[string]any](t, rec)["updates"].([]any)
+		updates := as[[]any](t, decode[map[string]any](t, rec)["updates"])
 		if len(updates) != 101 {
 			t.Fatalf("%q: updates = %d, want 101", query, len(updates))
 		}
@@ -1882,7 +1936,7 @@ func TestInternalErrorLogsUnderlyingCause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest("POST", "/api/stacks/acme/api", strings.NewReader(`{"stackName":"dev"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/stacks/acme/api", strings.NewReader(`{"stackName":"dev"}`))
 	req.Header.Set("Authorization", "token "+tok)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)

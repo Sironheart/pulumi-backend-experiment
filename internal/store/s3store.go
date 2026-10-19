@@ -84,15 +84,14 @@ func (s *S3Store) get(ctx context.Context, key string, out any) error {
 func (s *S3Store) getWithETag(ctx context.Context, key string, out any) (string, error) {
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
 	if err != nil {
-		var nsk *types.NoSuchKey
-		if errors.As(err, &nsk) {
+		if _, ok := errors.AsType[*types.NoSuchKey](err); ok {
 			return "", errNotFound
 		}
 		return "", fmt.Errorf("get %s: %w", key, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return "", err
+		return "", fmt.Errorf("decode %s: %w", key, err)
 	}
 	return aws.ToString(resp.ETag), nil
 }
@@ -150,20 +149,23 @@ func (s *S3Store) putConditional(
 		out *s3.PutObjectOutput
 		err error
 	)
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		input.Body = bytes.NewReader(body)
 		out, err = s.client.PutObject(ctx, input)
 		if !isConditionalConflict(err) {
-			return out, err
+			break
 		}
 	}
-	return out, err
+	if err != nil {
+		return out, fmt.Errorf("put %s: %w", key, err)
+	}
+	return out, nil
 }
 
 func (s *S3Store) putJSON(ctx context.Context, key string, v any, ifNoneMatch bool) error {
 	body, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode %s: %w", key, err)
 	}
 	return s.put(ctx, key, body, ifNoneMatch)
 }
@@ -171,7 +173,7 @@ func (s *S3Store) putJSON(ctx context.Context, key string, v any, ifNoneMatch bo
 func (s *S3Store) putJSONIfMatch(ctx context.Context, key string, v any, etag string) error {
 	body, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode %s: %w", key, err)
 	}
 	return s.putIfMatch(ctx, key, body, etag)
 }
@@ -181,7 +183,7 @@ func (s *S3Store) deleteIfMatch(ctx context.Context, key, etag string) error {
 		return errors.New("conditional delete requires ETag")
 	}
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		_, err = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket:  &s.bucket,
 			Key:     &key,
@@ -191,7 +193,10 @@ func (s *S3Store) deleteIfMatch(ctx context.Context, key, etag string) error {
 			break
 		}
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return nil
 }
 
 func (s *S3Store) CreateStack(ctx context.Context, org, project, stack string) (*Stack, error) {
@@ -239,7 +244,7 @@ func (s *S3Store) ListStacks(ctx context.Context, org string) ([]Stack, error) {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list %s: %w", prefix, err)
 		}
 		for _, obj := range page.Contents {
 			if !strings.HasSuffix(*obj.Key, "/stack.json") {
@@ -286,15 +291,15 @@ func (s *S3Store) DeleteStack(
 		return err
 	}
 	for start := 0; start < len(objects); start += 1000 {
-		if err := s.validateDeletionFence(ctx, st, updateID, generation); err != nil {
-			return err
+		if fenceErr := s.validateDeletionFence(ctx, st, updateID, generation); fenceErr != nil {
+			return fenceErr
 		}
 		end := min(start+1000, len(objects))
 		out, deleteErr := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: &s.bucket, Delete: &types.Delete{Objects: objects[start:end]},
 		})
 		if deleteErr != nil {
-			return deleteErr
+			return fmt.Errorf("delete objects: %w", deleteErr)
 		}
 		if len(out.Errors) > 0 {
 			first := out.Errors[0]
@@ -376,7 +381,7 @@ func (s *S3Store) listObjectsExcept(ctx context.Context, prefix string, excluded
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list %s: %w", prefix, err)
 		}
 		for _, obj := range page.Contents {
 			if _, skip := excluded[aws.ToString(obj.Key)]; !skip {
@@ -396,26 +401,25 @@ func (s *S3Store) GetCheckpoint(ctx context.Context, org, project, stack string)
 	if key == "" {
 		key = s.latestCheckpointKey(org, project, stack, st.Incarnation)
 	}
-	raw, _, err := s.getCheckpointWithETag(ctx, key)
-	return raw, err
+	return s.readCheckpoint(ctx, key)
 }
 
-func (s *S3Store) getCheckpointWithETag(ctx context.Context, key string) (json.RawMessage, string, error) {
+func (s *S3Store) readCheckpoint(ctx context.Context, key string) (json.RawMessage, error) {
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket, Key: aws.String(key),
 	})
 	if err != nil {
 		if isNotFound(err) {
-			return nil, "", ErrCheckpointNotFound
+			return nil, ErrCheckpointNotFound
 		}
-		return nil, "", err
+		return nil, fmt.Errorf("get %s: %w", key, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var raw json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, "", err
+		return nil, fmt.Errorf("decode %s: %w", key, err)
 	}
-	return raw, aws.ToString(resp.ETag), nil
+	return raw, nil
 }
 
 func (s *S3Store) GetCheckpointVersion(ctx context.Context, org, project, stack string, version int) (json.RawMessage, error) {
@@ -430,7 +434,7 @@ func (s *S3Store) GetCheckpointVersion(ctx context.Context, org, project, stack 
 	if key == "" {
 		key = s.historyCheckpointKey(org, project, stack, st.Incarnation, version)
 	}
-	raw, _, err := s.getCheckpointWithETag(ctx, key)
+	raw, err := s.readCheckpoint(ctx, key)
 	return raw, err
 }
 
@@ -453,7 +457,7 @@ func (s *S3Store) SaveCheckpoint(
 		return err
 	}
 
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		st, err := s.GetStack(ctx, org, project, stack)
 		if err != nil {
 			return err
@@ -486,7 +490,7 @@ func (s *S3Store) SaveCheckpoint(
 				deployment,
 				false,
 			); legacyErr != nil {
-				slog.Warn("checkpoint committed without legacy history copy", "error", legacyErr)
+				slog.WarnContext(ctx, "checkpoint committed without legacy history copy", "error", legacyErr)
 			}
 			if legacyErr := s.put(
 				ctx,
@@ -494,7 +498,7 @@ func (s *S3Store) SaveCheckpoint(
 				deployment,
 				false,
 			); legacyErr != nil {
-				slog.Warn("checkpoint committed without legacy latest copy", "error", legacyErr)
+				slog.WarnContext(ctx, "checkpoint committed without legacy latest copy", "error", legacyErr)
 			}
 			return nil
 		}
@@ -543,7 +547,7 @@ func (s *S3Store) CreateUpdate(ctx context.Context, org, project, stack, kind, u
 	updateKey := s.updateKey(org, project, stack, st.Incarnation, u.ID)
 	updateBody, err := json.Marshal(u)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode update: %w", err)
 	}
 	updateOut, err := s.putConditional(ctx, updateKey, updateBody, true, "")
 	if err != nil {
@@ -580,7 +584,7 @@ func (s *S3Store) CreateUpdate(ctx context.Context, org, project, stack, kind, u
 		return cause
 	}
 	if kind == "preview" {
-		for attempt := 0; attempt < 5; attempt++ {
+		for range 5 {
 			current, getErr := s.GetStack(ctx, org, project, stack)
 			if getErr != nil {
 				return nil, rollbackUpdate(getErr)
@@ -629,7 +633,7 @@ func (s *S3Store) commitUpdateVersion(
 	generation uint64,
 	version int,
 ) error {
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		st, err := s.GetStack(ctx, org, project, stack)
 		if err != nil {
 			return err
@@ -755,7 +759,7 @@ func (s *S3Store) ListUpdates(ctx context.Context, org, project, stack string) (
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list %s: %w", prefix, err)
 		}
 		for _, obj := range page.Contents {
 			var u Update
@@ -775,7 +779,7 @@ func (s *S3Store) AcquireLock(
 	org, project, stack, incarnation, updateID, owner string,
 	ttl time.Duration,
 ) (*Lock, error) {
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		st, err := s.GetStack(ctx, org, project, stack)
 		if err != nil {
 			return nil, err
@@ -858,7 +862,7 @@ func (s *S3Store) RenewLock(
 	generation uint64,
 	ttl time.Duration,
 ) (*Lock, error) {
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		st, err := s.GetStack(ctx, org, project, stack)
 		if err != nil {
 			return nil, err
@@ -908,7 +912,7 @@ func (s *S3Store) ReleaseLock(
 	org, project, stack, updateID string,
 	generation uint64,
 ) error {
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		st, err := s.GetStack(ctx, org, project, stack)
 		if errors.Is(err, ErrStackNotFound) {
 			return nil
@@ -998,6 +1002,6 @@ func (s *S3Store) deleteLegacyLock(
 	}
 	err := s.deleteIfMatch(ctx, s.lockKey(org, project, stack), lock.etag)
 	if err != nil && !isPreconditionFailed(err) && !isNotFound(err) {
-		slog.Warn("canonical lock committed without deleting legacy lock", "error", err)
+		slog.WarnContext(ctx, "canonical lock committed without deleting legacy lock", "error", err)
 	}
 }

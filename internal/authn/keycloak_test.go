@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	keycloak "github.com/stillya/testcontainers-keycloak"
@@ -51,14 +52,22 @@ func TestValidateAgainstKeycloak(t *testing.T) {
 // which only exists for machine-to-machine test setups like this one.
 func keycloakIDToken(t *testing.T, issuer string) string {
 	t.Helper()
-	resp, err := http.PostForm(issuer+"/protocol/openid-connect/token", url.Values{
+	form := url.Values{
 		"grant_type":    {"password"},
 		"client_id":     {"pulumi-backend"},
 		"client_secret": {"pulumi-backend-secret"},
 		"username":      {"alice"},
 		"password":      {"alice-secret"},
 		"scope":         {"openid"},
-	})
+	}
+	req, err := http.NewRequestWithContext(
+		t.Context(), http.MethodPost, issuer+"/protocol/openid-connect/token", strings.NewReader(form.Encode()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("token request: %v", err)
 	}

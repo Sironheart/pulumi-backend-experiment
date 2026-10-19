@@ -15,9 +15,9 @@ const (
 	testSecretsKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 )
 
-func newTestCrypter(t *testing.T, secretsKey string) *Crypter {
+func newTestCrypter(t *testing.T) *Crypter {
 	t.Helper()
-	c, err := NewCrypter(secretsKey)
+	c, err := NewCrypter(testSecretsKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func newTestCrypter(t *testing.T, secretsKey string) *Crypter {
 }
 
 func TestCrypterRoundTrip(t *testing.T) {
-	c := newTestCrypter(t, testSecretsKey)
+	c := newTestCrypter(t)
 	plaintext := []byte("my-secret-value")
 
 	ciphertext, err := c.Encrypt(context.Background(), testOrg, testProject, testStack, plaintext)
@@ -40,7 +40,7 @@ func TestCrypterRoundTrip(t *testing.T) {
 	}
 
 	// A new instance must decrypt persisted ciphertext with the same key.
-	restarted := newTestCrypter(t, testSecretsKey)
+	restarted := newTestCrypter(t)
 	got, err := restarted.Decrypt(context.Background(), testOrg, testProject, testStack, ciphertext)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
@@ -51,7 +51,7 @@ func TestCrypterRoundTrip(t *testing.T) {
 }
 
 func TestCrypterUsesUniqueNonces(t *testing.T) {
-	c := newTestCrypter(t, testSecretsKey)
+	c := newTestCrypter(t)
 	ctx := context.Background()
 	a, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("same"))
 	if err != nil {
@@ -67,7 +67,7 @@ func TestCrypterUsesUniqueNonces(t *testing.T) {
 }
 
 func TestCrypterBindsCiphertextToStack(t *testing.T) {
-	c := newTestCrypter(t, testSecretsKey)
+	c := newTestCrypter(t)
 	ctx := context.Background()
 	ciphertext, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
 	if err != nil {
@@ -93,7 +93,7 @@ func TestNewCrypterRejectsInvalidKeys(t *testing.T) {
 }
 
 func TestCrypterRejectsInvalidCiphertext(t *testing.T) {
-	c := newTestCrypter(t, testSecretsKey)
+	c := newTestCrypter(t)
 	ctx := context.Background()
 	ciphertext, err := c.Encrypt(ctx, testOrg, testProject, testStack, []byte("my-secret-value"))
 	if err != nil {

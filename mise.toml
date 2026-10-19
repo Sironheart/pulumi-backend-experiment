@@ -5,7 +5,6 @@ pulumi = "3.268.0"
 goreleaser = "2.18.3"
 svu = "3.4.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
-"aqua:securego/gosec" = "2.29.0"
 syft = "1.54.0"
 
 [env]
@@ -41,8 +40,8 @@ description = "Run the race detector"
 run = "CGO_ENABLED=1 go test -race -count=1 ./..."
 
 [tasks.security]
-description = "Run Go vulnerability and security scans"
-run = ["govulncheck ./...", "gosec ./..."]
+description = "Run Go vulnerability scan"
+run = "govulncheck ./..."
 
 [tasks.lint]
 description = "Run golangci-lint"

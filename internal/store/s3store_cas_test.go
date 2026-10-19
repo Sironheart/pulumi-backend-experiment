@@ -602,8 +602,7 @@ func TestDeleteStackRejectsNonDeletionFence(t *testing.T) {
 	}))
 
 	err := store.DeleteStack(t.Context(), "acme", "api", "dev", "", "update-1", 2)
-	var held *LockHeldError
-	if !errors.As(err, &held) {
+	if _, ok := errors.AsType[*LockHeldError](err); !ok {
 		t.Fatalf("DeleteStack error = %v", err)
 	}
 	if requests != 1 {
@@ -951,8 +950,7 @@ func TestPreviewCreationRejectsDeletionFence(t *testing.T) {
 	}))
 
 	_, err := store.CreateUpdate(t.Context(), "acme", "api", "dev", "preview", "preview-1")
-	var held *LockHeldError
-	if !errors.As(err, &held) {
+	if _, ok := errors.AsType[*LockHeldError](err); !ok {
 		t.Fatalf("CreateUpdate error = %v", err)
 	}
 	if putCalled {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -38,37 +39,40 @@ func main() {
 		path = "config.yaml"
 	}
 
-	cfg, err := config.Load(path)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx, path)
+	stop()
 	if err != nil {
-		slog.Error("load config", "error", err)
+		slog.Error("pulumi-backend", "error", err)
 		os.Exit(1)
 	}
+}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func run(ctx context.Context, path string) error {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	var oidcValidator api.OIDCValidator
 	if cfg.NoAuth {
-		slog.Warn("noAuth enabled: OIDC disabled, all requests accepted on loopback only", "addr", cfg.Listen)
+		slog.WarnContext(ctx, "noAuth enabled: OIDC disabled, all requests accepted on loopback only", "addr", cfg.Listen)
 	} else {
-		var err error
 		oidcValidator, err = authn.NewOIDCValidator(ctx, cfg.Issuer, cfg.ClientID)
 		if err != nil {
-			slog.Error("oidc validator", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("oidc validator: %w", err)
 		}
 	}
 
 	crypter, err := secrets.NewCrypter(cfg.SecretsKey)
 	if err != nil {
-		slog.Error("secrets crypter", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("secrets crypter: %w", err)
 	}
 
 	// Ambient credential chain (env, AWS_PROFILE, IRSA, ...).
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
 	if err != nil {
-		slog.Error("aws config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("aws config: %w", err)
 	}
 	st := store.NewS3Store(s3.NewFromConfig(awsCfg), cfg.Bucket)
 
@@ -81,17 +85,17 @@ func main() {
 	}
 	handler := api.NewServer(cfg, issuer, oidcValidator, st, crypter)
 	server := newHTTPServer(cfg.Listen, handler)
-	listener, err := net.Listen("tcp", cfg.Listen)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", cfg.Listen)
 	if err != nil {
-		slog.Error("listen", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("listen: %w", err)
 	}
 
-	slog.Info("listening", "addr", cfg.Listen)
+	slog.InfoContext(ctx, "listening", "addr", cfg.Listen)
 	if err := serve(ctx, server, listener); err != nil {
-		slog.Error("serve", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("serve: %w", err)
 	}
+	return nil
 }
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
@@ -119,7 +123,7 @@ func serve(ctx context.Context, server *http.Server, listener net.Listener) erro
 		}
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		shutdownErr := server.Shutdown(shutdownCtx)
 		if shutdownErr != nil {

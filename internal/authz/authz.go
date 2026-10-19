@@ -1,7 +1,11 @@
 // Package authz evaluates the backend's group-based stack access rules.
 package authz
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"slices"
+)
 
 // Action describes an operation on a stack.
 type Action string
@@ -76,7 +80,7 @@ func (a *Authorizer) HasAnyGrant(groups []string) bool {
 // ValidateRules rejects incomplete or unsafe rules before the service starts.
 func ValidateRules(rules []Rule) error {
 	if len(rules) == 0 {
-		return fmt.Errorf("at least one authorization rule is required when noAuth is false")
+		return errors.New("at least one authorization rule is required when noAuth is false")
 	}
 	for i, rule := range rules {
 		if err := validateStrings(rule.Groups, "groups", i, false); err != nil {
@@ -120,10 +124,8 @@ func validateStrings(values []string, field string, rule int, allowWildcard bool
 
 func intersects(a, b []string) bool {
 	for _, left := range a {
-		for _, right := range b {
-			if left == right {
-				return true
-			}
+		if slices.Contains(b, left) {
+			return true
 		}
 	}
 	return false

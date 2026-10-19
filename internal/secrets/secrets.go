@@ -49,7 +49,7 @@ func (c *Crypter) Encrypt(_ context.Context, org, project, stack string, plainte
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return "", err
+		return "", fmt.Errorf("generate nonce: %w", err)
 	}
 	sealed := gcm.Seal(nonce, nonce, plaintext, []byte(scope))
 	return ciphertextPrefix + base64.StdEncoding.EncodeToString(sealed), nil
@@ -71,7 +71,11 @@ func (c *Crypter) Decrypt(_ context.Context, org, project, stack, ciphertext str
 	if len(sealed) < gcm.NonceSize() {
 		return nil, errors.New("payload too short")
 	}
-	return gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], []byte(scope))
+	plaintext, err := gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], []byte(scope))
+	if err != nil {
+		return nil, fmt.Errorf("open ciphertext: %w", err)
+	}
+	return plaintext, nil
 }
 
 func (c *Crypter) gcm(org, project, stack string) (cipher.AEAD, string, error) {
@@ -82,11 +86,11 @@ func (c *Crypter) gcm(org, project, stack string) (cipher.AEAD, string, error) {
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("aes cipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("gcm: %w", err)
 	}
 	return gcm, scope, nil
 }

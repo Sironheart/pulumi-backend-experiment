@@ -54,7 +54,7 @@ func NewOIDCValidator(ctx context.Context, issuer, clientID string) (*OIDCValida
 func (v *OIDCValidator) Validate(ctx context.Context, raw string) (Identity, error) {
 	tok, err := v.verifier.Verify(ctx, raw)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, fmt.Errorf("verify id token: %w", err)
 	}
 	var claims map[string]any
 	if err := tok.Claims(&claims); err != nil {
@@ -146,11 +146,15 @@ func (i *TokenIssuer) sign(claims jwt.MapClaims) (string, error) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	token.Header["kid"] = i.ActiveKeyID
-	return token.SignedString(key)
+	signed, err := token.SignedString(key)
+	if err != nil {
+		return "", fmt.Errorf("sign token: %w", err)
+	}
+	return signed, nil
 }
 
 func (i *TokenIssuer) parse(raw string) (*jwt.Token, error) {
-	return jwt.Parse(raw, func(token *jwt.Token) (any, error) {
+	token, err := jwt.Parse(raw, func(token *jwt.Token) (any, error) {
 		kid, ok := token.Header["kid"].(string)
 		if !ok || kid == "" {
 			return nil, errors.New("token has no key ID")
@@ -165,6 +169,10 @@ func (i *TokenIssuer) parse(raw string) (*jwt.Token, error) {
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("parse token: %w", err)
+	}
+	return token, nil
 }
 
 func (i *TokenIssuer) Issue(id Identity) (string, error) {

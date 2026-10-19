@@ -25,12 +25,10 @@ func startFloci(t *testing.T) (*s3.Client, string) {
 	t.Helper()
 	ctx := context.Background()
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        flociImage,
-			ExposedPorts: []string{"4566/tcp"},
-			WaitingFor:   wait.ForListeningPort("4566/tcp"),
-		},
-		Started: true,
+		Image:        flociImage,
+		ExposedPorts: []string{"4566/tcp"},
+		WaitingFor:   wait.ForListeningPort("4566/tcp"),
+		Started:      true,
 	})
 	if err != nil {
 		t.Fatalf("start floci: %v", err)
@@ -87,7 +85,7 @@ func TestStackLifecycle(t *testing.T) {
 		t.Errorf("stack = %+v", st)
 	}
 
-	if _, err := s.CreateStack(ctx, "acme", "web", "prod"); err != nil {
+	if _, err = s.CreateStack(ctx, "acme", "web", "prod"); err != nil {
 		t.Fatal(err)
 	}
 	stacks, err := s.ListStacks(ctx, "acme")
@@ -150,12 +148,12 @@ func TestCheckpointRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.GetCheckpoint(ctx, "acme", "api", "dev"); !errors.Is(err, ErrCheckpointNotFound) {
+	if _, err = s.GetCheckpoint(ctx, "acme", "api", "dev"); !errors.Is(err, ErrCheckpointNotFound) {
 		t.Fatalf("GetCheckpoint before save: %v", err)
 	}
 
 	deployment := []byte(`{"version":3,"deployment":{"manifest":{"time":"2026-09-07T00:00:00Z"}}}`)
-	if err := s.SaveCheckpoint(
+	if err = s.SaveCheckpoint(
 		ctx,
 		"acme",
 		"api",
@@ -197,7 +195,7 @@ func TestUpdateLifecycle(t *testing.T) {
 	}
 
 	updateID := NewUpdateID()
-	if _, err := s.AcquireLock(
+	if _, err = s.AcquireLock(
 		ctx,
 		"acme",
 		"api",
@@ -225,7 +223,7 @@ func TestUpdateLifecycle(t *testing.T) {
 		t.Errorf("preview version = %d, want current version 1", u2.Version)
 	}
 
-	if err := s.StartUpdate(ctx, "acme", "api", "dev", u.ID); err != nil {
+	if err = s.StartUpdate(ctx, "acme", "api", "dev", u.ID); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetUpdate(ctx, "acme", "api", "dev", u.ID)
@@ -237,7 +235,7 @@ func TestUpdateLifecycle(t *testing.T) {
 	}
 
 	changes := map[string]int{"create": 3}
-	if err := s.CompleteUpdate(ctx, "acme", "api", "dev", u.ID, "succeeded", "done", changes); err != nil {
+	if err = s.CompleteUpdate(ctx, "acme", "api", "dev", u.ID, "succeeded", "done", changes); err != nil {
 		t.Fatal(err)
 	}
 	got, err = s.GetUpdate(ctx, "acme", "api", "dev", u.ID)
@@ -277,7 +275,7 @@ func TestLockLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.GetLock(ctx, "acme", "api", "dev"); !errors.Is(err, ErrNoLock) {
+	if _, err = s.GetLock(ctx, "acme", "api", "dev"); !errors.Is(err, ErrNoLock) {
 		t.Fatalf("GetLock before acquire: %v", err)
 	}
 
@@ -318,7 +316,7 @@ func TestLockLifecycle(t *testing.T) {
 	}
 
 	// Renew with wrong update ID fails.
-	if _, err := s.RenewLock(ctx, "acme", "api", "dev", "upd-2", lock.Generation, time.Minute); err == nil {
+	if _, err = s.RenewLock(ctx, "acme", "api", "dev", "upd-2", lock.Generation, time.Minute); err == nil {
 		t.Error("renew with wrong id succeeded")
 	}
 	renewed, err := s.RenewLock(ctx, "acme", "api", "dev", "upd-1", lock.Generation, 2*time.Minute)
@@ -349,7 +347,7 @@ func TestExpiredLockIsBreakable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AcquireLock(
+	if _, err = s.AcquireLock(
 		ctx,
 		"acme",
 		"api",

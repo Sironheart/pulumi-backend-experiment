@@ -26,7 +26,8 @@ func TestHTTPServerHasTimeouts(t *testing.T) {
 }
 
 func TestServeDrainsActiveRequestOnCancellation(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,12 @@ func TestServeDrainsActiveRequestOnCancellation(t *testing.T) {
 	requestDone := make(chan error, 1)
 	go func() {
 		client := &http.Client{Timeout: time.Second}
-		resp, err := client.Get("http://" + listener.Addr().String())
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+listener.Addr().String(), http.NoBody)
+		if err != nil {
+			requestDone <- err
+			return
+		}
+		resp, err := client.Do(req)
 		if err == nil {
 			_, err = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()

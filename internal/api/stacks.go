@@ -70,7 +70,7 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	slog.Info("stack created", "org", org, "project", project, "stack", req.StackName)
+	slog.InfoContext(r.Context(), "stack created", "org", org, "project", project, "stack", req.StackName)
 	// The CLI (>=3.x) decodes a CreateStackResponse body; an empty 204 fails
 	// with "unexpected end of JSON input".
 	writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
@@ -92,23 +92,23 @@ func (s *Server) rollbackFailedStackCreation(
 		s.cfg.LeaseDuration,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("acquire lock: %w", err)
 	}
 	releaseLock := true
 	defer func() {
 		if releaseLock {
-			_ = s.store.ReleaseLock(ctx, org, project, stackName, updateID, lock.Generation)
+			s.releaseLockOnExit(ctx, org, project, stackName, updateID, lock.Generation)
 		}
 	}()
 	st, err := s.store.GetStack(ctx, org, project, stackName)
 	if err != nil {
-		return err
+		return fmt.Errorf("get stack: %w", err)
 	}
 	if st.Incarnation != incarnation {
 		return store.ErrConcurrentMutation
 	}
 	releaseLock = false
-	return s.store.DeleteStack(
+	if err := s.store.DeleteStack(
 		ctx,
 		org,
 		project,
@@ -116,7 +116,10 @@ func (s *Server) rollbackFailedStackCreation(
 		incarnation,
 		updateID,
 		lock.Generation,
-	)
+	); err != nil {
+		return fmt.Errorf("delete stack: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) headProject(w http.ResponseWriter, r *http.Request) {
@@ -169,36 +172,35 @@ func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
 		s.cfg.LeaseDuration,
 	)
 	if err != nil {
-		var held *store.LockHeldError
-		if errors.As(err, &held) &&
-			held.Lock.Owner == owner &&
-			strings.HasPrefix(held.Lock.UpdateID, "delete-") &&
-			!held.Lock.Expired(time.Now()) {
-			updateID = held.Lock.UpdateID
-			lock, err = s.store.RenewLock(
-				r.Context(),
-				org,
-				project,
-				stackName,
-				updateID,
-				held.Lock.Generation,
-				s.cfg.LeaseDuration,
-			)
-			if err != nil {
-				s.writeStoreError(w, r, err, "renewing deletion lock failed")
-				return
-			}
-		} else {
+		held, ok := errors.AsType[*store.LockHeldError](err)
+		if !ok ||
+			held.Lock.Owner != owner ||
+			!strings.HasPrefix(held.Lock.UpdateID, "delete-") ||
+			held.Lock.Expired(time.Now()) {
 			s.writeStoreError(w, r, err, "locking stack for deletion failed")
+			return
+		}
+		updateID = held.Lock.UpdateID
+		lock, err = s.store.RenewLock(
+			r.Context(),
+			org,
+			project,
+			stackName,
+			updateID,
+			held.Lock.Generation,
+			s.cfg.LeaseDuration,
+		)
+		if err != nil {
+			s.writeStoreError(w, r, err, "renewing deletion lock failed")
 			return
 		}
 	}
 	releaseLock := true
-	defer func() {
+	defer func(ctx context.Context) {
 		if releaseLock {
-			_ = s.store.ReleaseLock(r.Context(), org, project, stackName, updateID, lock.Generation)
+			s.releaseLockOnExit(ctx, org, project, stackName, updateID, lock.Generation)
 		}
-	}()
+	}(r.Context())
 	if r.URL.Query().Get("force") != "true" {
 		checkpoint, err := s.store.GetCheckpoint(r.Context(), org, project, stackName)
 		switch {
@@ -234,7 +236,7 @@ func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err, "deleting stack failed")
 		return
 	}
-	slog.Info("stack deleted", "org", org, "project", project, "stack", stackName)
+	slog.InfoContext(r.Context(), "stack deleted", "org", org, "project", project, "stack", stackName)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -245,7 +247,7 @@ func checkpointHasResources(raw json.RawMessage) (bool, error) {
 		} `json:"deployment"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return false, err
+		return false, fmt.Errorf("parse checkpoint: %w", err)
 	}
 	return len(doc.Deployment.Resources) > 0, nil
 }
@@ -269,21 +271,17 @@ func (s *Server) exportStack(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The CLI fetches the current deployment on every operation and treats
 		// a 404 as fatal; a fresh stack must export as an empty deployment.
-		if errors.Is(err, store.ErrCheckpointNotFound) && r.PathValue("version") == "" {
-			raw = json.RawMessage(`{"version":3,"deployment":{}}`)
-		} else {
-			if s.storeError(w, err) {
-				return
-			}
-			internalError(w, r, err, "reading checkpoint failed")
+		if !errors.Is(err, store.ErrCheckpointNotFound) || r.PathValue("version") != "" {
+			s.writeStoreError(w, r, err, "reading checkpoint failed")
 			return
 		}
+		raw = json.RawMessage(`{"version":3,"deployment":{}}`)
 	}
 	if !json.Valid(raw) {
 		internalError(w, r, errors.New("stored checkpoint is not valid JSON"), "reading checkpoint failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, json.RawMessage(raw))
+	writeJSON(w, http.StatusOK, raw)
 }
 
 func (s *Server) importStack(w http.ResponseWriter, r *http.Request) {
@@ -321,9 +319,7 @@ func (s *Server) importStack(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err, "acquiring lock failed")
 		return
 	}
-	defer func() {
-		_ = s.store.ReleaseLock(r.Context(), org, project, stackName, updateID, lock.Generation)
-	}()
+	defer s.releaseLockOnExit(r.Context(), org, project, stackName, updateID, lock.Generation)
 
 	u, err := s.store.CreateUpdate(r.Context(), org, project, stackName, "import", updateID)
 	if err != nil {

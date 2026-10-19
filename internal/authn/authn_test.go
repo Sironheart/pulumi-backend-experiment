@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -46,8 +47,8 @@ func signTestClaims(t *testing.T, issuer *TokenIssuer, claims jwt.MapClaims) str
 	return raw
 }
 
-// testIdP is a minimal OIDC IdP: discovery document + JWKS.
-func testIdP(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
+// testIDP is a minimal OIDC IdP: discovery document + JWKS.
+func testIDP(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -80,9 +81,7 @@ func oidcToken(t *testing.T, key *rsa.PrivateKey, issuer string, claims jwt.MapC
 		"iat": time.Now().Unix(),
 		"sub": "user-sub",
 	}
-	for k, v := range claims {
-		base[k] = v
-	}
+	maps.Copy(base, claims)
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, base)
 	tok.Header["kid"] = "test-key"
 	signed, err := tok.SignedString(key)
@@ -102,7 +101,7 @@ func newValidator(t *testing.T, issuer string) *OIDCValidator {
 }
 
 func TestValidateOIDCToken(t *testing.T) {
-	srv, key := testIdP(t)
+	srv, key := testIDP(t)
 	v := newValidator(t, srv.URL)
 
 	id, err := v.Validate(t.Context(), oidcToken(t, key, srv.URL, jwt.MapClaims{
@@ -124,7 +123,7 @@ func TestValidateOIDCToken(t *testing.T) {
 }
 
 func TestValidateFallsBackToSub(t *testing.T) {
-	srv, key := testIdP(t)
+	srv, key := testIDP(t)
 	v := newValidator(t, srv.URL)
 	id, err := v.Validate(t.Context(), oidcToken(t, key, srv.URL, nil))
 	if err != nil {
@@ -136,7 +135,7 @@ func TestValidateFallsBackToSub(t *testing.T) {
 }
 
 func TestValidateRejects(t *testing.T) {
-	srv, key := testIdP(t)
+	srv, key := testIDP(t)
 	v := newValidator(t, srv.URL)
 
 	cases := map[string]jwt.MapClaims{
@@ -193,7 +192,7 @@ func TestBackendTokenKeyRotation(t *testing.T) {
 		ActiveKeyID: "new",
 		TTL:         time.Hour,
 	}
-	if _, err := rotated.Verify(oldToken); err != nil {
+	if _, err = rotated.Verify(oldToken); err != nil {
 		t.Fatalf("Verify old token after rotation: %v", err)
 	}
 
@@ -360,7 +359,7 @@ func TestMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 	req.Header.Set("Authorization", "token "+tok)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -369,7 +368,7 @@ func TestMiddleware(t *testing.T) {
 	}
 
 	for _, header := range []string{"", "token invalid", "Bearer " + tok + "x"} {
-		req := httptest.NewRequest("GET", "/", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 		if header != "" {
 			req.Header.Set("Authorization", header)
 		}
@@ -384,7 +383,7 @@ func TestMiddleware(t *testing.T) {
 func ExampleTokenIssuer_Issue() {
 	issuer := newTokenIssuer("secret", time.Hour)
 	tok, _ := issuer.Issue(testIdentity("u"))
-	fmt.Println(len(tok) > 0)
+	fmt.Println(tok != "")
 	// Output: true
 }
 

@@ -32,7 +32,7 @@ type Stack struct {
 	Name                string            `json:"name"`
 	Version             int               `json:"version"`
 	Created             time.Time         `json:"created"`
-	LastUpdate          time.Time         `json:"lastUpdate,omitempty"`
+	LastUpdate          time.Time         `json:"lastUpdate"`
 	Incarnation         string            `json:"incarnation,omitempty"`
 	LockProtocol        int               `json:"lockProtocol,omitempty"`
 	Fence               uint64            `json:"fence,omitempty"`

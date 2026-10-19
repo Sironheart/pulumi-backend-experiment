@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -58,11 +59,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
-		return nil, fmt.Errorf("parse config: multiple YAML documents are not supported")
+		return nil, errors.New("parse config: multiple YAML documents are not supported")
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":8080"
@@ -76,23 +77,23 @@ func Load(path string) (*Config, error) {
 func (c *Config) validate() error {
 	if !c.NoAuth {
 		if c.Issuer == "" {
-			return fmt.Errorf("issuer is required")
+			return errors.New("issuer is required")
 		}
 		if c.ClientID == "" {
-			return fmt.Errorf("clientId is required")
+			return errors.New("clientId is required")
 		}
 		if c.ClientID == "replace-with-client-id" {
-			return fmt.Errorf("clientId must not be a placeholder")
+			return errors.New("clientId must not be a placeholder")
 		}
 	}
 	if c.NoAuth && !isLoopbackListen(c.Listen) {
-		return fmt.Errorf("noAuth requires a loopback listen address")
+		return errors.New("noAuth requires a loopback listen address")
 	}
 	if err := c.resolveSigningKeys(); err != nil {
 		return err
 	}
 	if c.SecretsKey == "" {
-		return fmt.Errorf("secretsKey is required")
+		return errors.New("secretsKey is required")
 	}
 	var err error
 	c.SecretsKey, err = resolveEnvRef("secretsKey", c.SecretsKey)
@@ -104,20 +105,20 @@ func (c *Config) validate() error {
 	}
 	if !c.NoAuth {
 		if err := authz.ValidateRules(c.Authorization); err != nil {
-			return err
+			return fmt.Errorf("authorization: %w", err)
 		}
 	}
 	if c.Bucket == "" {
-		return fmt.Errorf("bucket is required")
+		return errors.New("bucket is required")
 	}
 	if c.Region == "" {
-		return fmt.Errorf("region is required")
+		return errors.New("region is required")
 	}
 	if c.TokenTTL < 2*time.Second {
-		return fmt.Errorf("tokenTTL must be at least 2s")
+		return errors.New("tokenTTL must be at least 2s")
 	}
 	if c.LeaseDuration < 5*time.Minute {
-		return fmt.Errorf("leaseDuration must be at least 5m")
+		return errors.New("leaseDuration must be at least 5m")
 	}
 	return nil
 }
@@ -135,10 +136,10 @@ func validateSecretsKey(value string) error {
 
 func (c *Config) resolveSigningKeys() error {
 	if len(c.SigningKeys) == 0 {
-		return fmt.Errorf("at least one signingKey is required")
+		return errors.New("at least one signingKey is required")
 	}
 	if c.ActiveSigningKey == "" {
-		return fmt.Errorf("activeSigningKey is required")
+		return errors.New("activeSigningKey is required")
 	}
 	seen := make(map[string]struct{}, len(c.SigningKeys))
 	foundActive := false

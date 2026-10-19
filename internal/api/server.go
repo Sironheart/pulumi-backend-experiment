@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -66,10 +67,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/token/exchange", s.tokenExchange)
 
 	userAuthed := func(pattern string, action authz.Action, h http.HandlerFunc) {
-		s.mux.Handle(pattern, s.authMiddleware(false, action, http.HandlerFunc(h)))
+		s.mux.Handle(pattern, s.authMiddleware(false, action, h))
 	}
-	updateAuthed := func(pattern string, action authz.Action, h http.HandlerFunc) {
-		s.mux.Handle(pattern, s.authMiddleware(true, action, http.HandlerFunc(h)))
+	updateAuthed := func(pattern string, h http.HandlerFunc) {
+		s.mux.Handle(pattern, s.authMiddleware(true, authz.Write, h))
 	}
 
 	userAuthed("GET /api/capabilities", "", s.capabilities)
@@ -98,13 +99,13 @@ func (s *Server) routes() {
 	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}", authz.Write, s.createUpdate)
 	userAuthed("GET /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}", authz.Read, s.getUpdateStatus)
 	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}", authz.Write, s.startUpdate)
-	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpoint", authz.Write, s.patchCheckpoint)
-	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpointverbatim", authz.Write, s.patchCheckpointVerbatim)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/complete", authz.Write, s.completeUpdate)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/renew_lease", authz.Write, s.renewLease)
+	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpoint", s.patchCheckpoint)
+	updateAuthed("PATCH /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/checkpointverbatim", s.patchCheckpointVerbatim)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/complete", s.completeUpdate)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/renew_lease", s.renewLease)
 	userAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/cancel", authz.Write, s.cancelUpdate)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events", authz.Write, s.discardEvents)
-	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events/batch", authz.Write, s.discardEvents)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events", s.discardEvents)
+	updateAuthed("POST /api/stacks/{org}/{project}/{stack}/{kind}/{updateID}/events/batch", s.discardEvents)
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -113,7 +114,7 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("request", "method", r.Method, "path", r.URL.Path)
+	slog.DebugContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path)
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	s.mux.ServeHTTP(w, r)
 }
@@ -232,7 +233,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("write json response", "error", err)
+	}
 }
 
 type errorResponse struct {
@@ -247,7 +250,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // internalError logs the underlying cause server-side; the client keeps the
 // generic message so internals never leak into the API response.
 func internalError(w http.ResponseWriter, r *http.Request, err error, message string) {
-	slog.Error("internal error", "method", r.Method, "path", r.URL.Path, "error", err)
+	slog.ErrorContext(r.Context(), "internal error", "method", r.Method, "path", r.URL.Path, "error", err)
 	writeError(w, http.StatusInternalServerError, message)
 }
 
@@ -295,7 +298,7 @@ func decodeBody(r *http.Request, v any) error {
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("gzip body: %w", err)
 		}
 		defer func() { _ = gz.Close() }()
 		body = io.NopCloser(gz)
@@ -306,7 +309,7 @@ func decodeBody(r *http.Request, v any) error {
 		if limited.N == 0 || isMaxBytesError(err) {
 			return errRequestTooLarge
 		}
-		return err
+		return fmt.Errorf("decode body: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
