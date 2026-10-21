@@ -22,7 +22,7 @@ jobs:
           key: go-${{ runner.os }}-${{ runner.arch }}-checks-${{ hashFiles('mise.lock', '**/go.sum') }}
       - uses: https://github.com/jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          version: "2026.10.15"
+          version: "2026.10.17"
           install_args: --locked go golangci-lint goreleaser go:golang.org/x/vuln/cmd/govulncheck
           github_token: ""
       - run: mise run hygiene
@@ -43,7 +43,7 @@ jobs:
           key: go-${{ runner.os }}-${{ runner.arch }}-integration-${{ hashFiles('mise.lock', '**/go.sum') }}
       - uses: https://github.com/jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          version: "2026.10.15"
+          version: "2026.10.17"
           install_args: --locked go
           github_token: ""
       - run: mise run integration
@@ -60,7 +60,7 @@ jobs:
           key: go-${{ runner.os }}-${{ runner.arch }}-contract-${{ hashFiles('mise.lock', '**/go.sum') }}
       - uses: https://github.com/jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          version: "2026.10.15"
+          version: "2026.10.17"
           install_args: --locked go pulumi
           github_token: ""
       - run: mise run contract
