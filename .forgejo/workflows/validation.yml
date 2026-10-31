@@ -20,7 +20,7 @@ jobs:
             ${{ env.GOCACHE }}
             ${{ env.GOMODCACHE }}
           key: go-${{ runner.os }}-${{ runner.arch }}-checks-${{ hashFiles('mise.lock', '**/go.sum') }}
-      - uses: https://github.com/jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: https://github.com/jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           version: "2026.10.24"
           install_args: --locked go golangci-lint goreleaser go:golang.org/x/vuln/cmd/govulncheck
@@ -41,7 +41,7 @@ jobs:
             ${{ env.GOCACHE }}
             ${{ env.GOMODCACHE }}
           key: go-${{ runner.os }}-${{ runner.arch }}-integration-${{ hashFiles('mise.lock', '**/go.sum') }}
-      - uses: https://github.com/jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: https://github.com/jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           version: "2026.10.24"
           install_args: --locked go
@@ -58,7 +58,7 @@ jobs:
             ${{ env.GOCACHE }}
             ${{ env.GOMODCACHE }}
           key: go-${{ runner.os }}-${{ runner.arch }}-contract-${{ hashFiles('mise.lock', '**/go.sum') }}
-      - uses: https://github.com/jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: https://github.com/jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           version: "2026.10.24"
           install_args: --locked go pulumi
