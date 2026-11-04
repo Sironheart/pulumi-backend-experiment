@@ -1,6 +1,6 @@
 module pulumi-backend-contract
 
-go 1.27.0
+go 1.27.3
 
 require github.com/pulumi/pulumi/sdk/v3 v3.268.0
 
