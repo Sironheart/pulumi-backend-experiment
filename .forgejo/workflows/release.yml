@@ -36,7 +36,7 @@ jobs:
             ${{ env.GOMODCACHE }}
           key: go-${{ runner.os }}-${{ runner.arch }}-release-${{ hashFiles('mise.lock', '**/go.sum') }}
 
-      - uses: https://github.com/jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      - uses: https://github.com/jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: "2026.11.2"
           install_args: --locked go goreleaser svu syft
