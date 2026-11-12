@@ -5,7 +5,7 @@ pulumi = "3.274.1"
 goreleaser = "2.20.0"
 svu = "3.4.4"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.9.0"
-syft = "1.57.0"
+syft = "1.57.1"
 
 [env]
 AWS_REGION = { default = "eu-central-1" }
