@@ -2,7 +2,7 @@ module pulumi-backend-contract
 
 go 1.27.4
 
-require github.com/pulumi/pulumi/sdk/v3 v3.274.1
+require github.com/pulumi/pulumi/sdk/v3 v3.276.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
