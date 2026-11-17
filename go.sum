@@ -131,8 +131,8 @@ github.com/shirou/gopsutil/v4 v4.26.6 h1:Mzr/npDtQC/xpeEuQKHZt8Zo9CmPvhTj8nkR8w5
 github.com/shirou/gopsutil/v4 v4.26.6/go.mod h1:LZ6ewCSkBqUpvSOf+LsTGnRinC6iaNUNMGBtDkJBaLQ=
 github.com/sirupsen/logrus v1.9.4 h1:TsZE7l11zFCLZnZ+teH4Umoq5BhEIfIzfRDZ1Uzql2w=
 github.com/sirupsen/logrus v1.9.4/go.mod h1:ftWc9WdOfJ0a92nsE2jF5u5ZwH8Bv2zdeOC42RjbV2g=
-github.com/stillya/testcontainers-keycloak v0.3.8 h1:TcGNR/FQ85PKSXPlllywWTW59z6rVk/hd7g+zj54Hdg=
-github.com/stillya/testcontainers-keycloak v0.3.8/go.mod h1:mT9MsQxmU6zMxYnR8z0OA8GRIURp6gkk6SjBJ11U8r0=
+github.com/stillya/testcontainers-keycloak v0.3.9 h1:Q45Xcr85qOwxlLbWpLAeQCaP4xyI03Wk68KMq6n78Cs=
+github.com/stillya/testcontainers-keycloak v0.3.9/go.mod h1:Usz316LF5R6fXz4SOkpITKMuEF2dL7DSep4qQOcifI8=
 github.com/stretchr/objx v0.5.3 h1:jmXUvGomnU1o3W/V5h2VEradbpJDwGrzugQQvL0POH4=
 github.com/stretchr/objx v0.5.3/go.mod h1:rDQraq+vQZU7Fde9LOZLr8Tax6zZvy4kuNKF+QYS+U0=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
