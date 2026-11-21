@@ -2,7 +2,7 @@ module pulumi-backend-contract
 
 go 1.27.4
 
-require github.com/pulumi/pulumi/sdk/v3 v3.276.0
+require github.com/pulumi/pulumi/sdk/v3 v3.277.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
@@ -109,9 +109,9 @@ require (
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/frand v1.4.2 // indirect
 )
